@@ -306,29 +306,30 @@ def build(
     for short, dirs in shapes_by_route.items():
         cat = categorise(short, high_frequency=short in hf_shorts)
         category_by_short[short] = cat
-        primary = dirs.get(0) or dirs.get(1)
-        secondary = dirs.get(1) if primary is dirs.get(0) else None
-        components = combine_directions(
-            primary, secondary, threshold_m=DIRECTION_MERGE_THRESHOLD_M
-        )
-        # Record the pre-offset length: parallel_offset on a closed loop
-        # can shrink the geometry dramatically, so label sampling needs
-        # the true line length, not the offset's possibly-truncated one.
+
+        # Pass both directions to the bundle as separate components
+        # under the same sub_id. The cross-route snap-to-canonical
+        # bundle then handles bidirectional merging too: if dir0 and
+        # dir1 sit within 18 m of each other they snap to one trunk;
+        # if they diverge (e.g. one-way pair on the Liffey quays,
+        # 50 m apart) they stay as two parallel canonicals. Avoids
+        # combine_directions picking an inconsistent "primary"
+        # across routes that ends up confusing the bundling.
+        components: list[LineString] = []
+        for dir_id in (0, 1):
+            line = dirs.get(dir_id)
+            if line is not None:
+                components.append(line)
+        if not components:
+            continue
         pre_offset_length_m[short] = sum(
             _project_itm(c).length for c in components
         )
-        # Apply per-category perpendicular offset so a corridor served
-        # by routes of different classes shows them as parallel
-        # neighbours rather than over-painting one another.
         offset_m = CATEGORY_OFFSET_M.get(cat, 0)
         if offset_m:
             components = [offset_line(c, offset_m) for c in components]
-            # Anchor the first/last stop only on offset lines — full
-            # mid-route anchoring caused visible jitter as the line
-            # zig-zagged in to every stop. Termini matter most because
-            # that's where the badge sits prominently.
             stops = stops_per_short_full.get(short, [])
-            if components and stops and len(stops) >= 2:
+            if stops and len(stops) >= 2:
                 anchors = [stops[0], stops[-1]]
                 components = [
                     anchor_to_stops(c, anchors, max_distance_m=offset_m + 8)

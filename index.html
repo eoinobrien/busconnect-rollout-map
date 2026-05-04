@@ -344,13 +344,39 @@
       // Track which categories the user has currently enabled (lines).
       const enabledCategories = new Set(CATEGORY_ORDER);
 
+      // Per-zoom label visibility. At lower zooms the map is too
+      // crowded to show every stop badge, so we only show "important"
+      // ones — labels with many routes, or in higher-priority
+      // categories. As you zoom in, the threshold relaxes and more
+      // badges appear.
+      function shouldShowBadge(item, zoom) {
+        const cat = item.category;
+        const n = item.routes.length;
+        if (zoom >= 16) return true;
+        if (zoom >= 15) return n >= 1;  // all
+        if (zoom >= 14) return cat === 'spine' || n >= 2;
+        if (zoom >= 13) return cat === 'spine' || n >= 3;
+        if (zoom >= 12) return cat === 'spine' && n >= 2;
+        return false;
+      }
+
       function syncLabels() {
-        const zoomOk = map.getZoom() >= 12;
+        const zoom = map.getZoom();
+
+        // Toggle category sub-layer visibility as before so disabling a
+        // category still hides everything in it.
         for (const cat of CATEGORY_ORDER) {
           const ll = labelLayersByCategory[cat];
-          const shouldShow = zoomOk && enabledCategories.has(cat);
+          const shouldShow = zoom >= 12 && enabledCategories.has(cat);
           if (shouldShow && !map.hasLayer(ll)) ll.addTo(map);
           else if (!shouldShow && map.hasLayer(ll)) map.removeLayer(ll);
+        }
+
+        // Per-badge visibility based on zoom + cluster size.
+        for (const item of allLabels) {
+          const el = item.marker.getElement();
+          if (!el) continue;
+          el.style.display = shouldShowBadge(item, zoom) ? '' : 'none';
         }
       }
       map.on('zoomend', syncLabels);
