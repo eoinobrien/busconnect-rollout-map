@@ -225,6 +225,10 @@
         if (!badge) continue;
         const matches = item.routes.some(r => set.has(r));
         badge.classList.toggle('dimmed', !matches);
+        // Lift the selected route's badges above the dimmed ones so
+        // they're never covered. The Leaflet marker pane uses zIndex
+        // on the icon container.
+        el.style.zIndex = matches ? 1000 : '';
       }
       document.getElementById('clearHighlight').style.display = 'block';
     }
@@ -239,6 +243,7 @@
         if (!el) continue;
         const badge = el.querySelector('.route-badge');
         if (badge) badge.classList.remove('dimmed');
+        el.style.zIndex = '';
       }
       document.getElementById('clearHighlight').style.display = 'none';
     }
