@@ -2,7 +2,7 @@
 
 Interactive Leaflet map of Dublin Bus and Go-Ahead Dublin city routes for a given weekday, built from the [Transport for Ireland GTFS feed](https://www.transportforireland.ie/transitData/Data/GTFS_Realtime.zip).
 
-Lettered BusConnects spine routes (A1-A2, B1, C1-C6, D1-D5, E1-E2, F1-F3, G1-G2, H1-H3) are bundled where they share a path and split where they diverge.
+Lettered BusConnects spine routes are bundled where they share a path and split where they diverge. As of May 2026 the rolled-out Dublin spines are **C1-C6, E1-E2, F1-F3, G1-G2, H1-H3**; the A, B, and D spines have not yet launched in Dublin (the A1/A2/B1/D1-D5 entries in the GTFS belong to Bus Eireann's Athlone/Drogheda networks under agency 7778020).
 
 ## Rebuild
 
@@ -20,9 +20,20 @@ python build.py --date 2026-05-05
 
 # 4. Open the map
 # Most browsers block fetch() on file://, so serve locally:
-python -m http.server 8000
+python -m http.server 8000 --bind 127.0.0.1
 # then visit http://localhost:8000/
 ```
+
+## Tests
+
+```bash
+python -m pytest tests/ -v
+```
+
+28 unit + integration tests cover the calendar/services resolver,
+agency filter, shape selection, route classification, spine bundling,
+colour palette, and the end-to-end pipeline against a synthetic GTFS
+feed.
 
 ## Scope
 
