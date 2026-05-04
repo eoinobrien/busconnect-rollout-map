@@ -63,22 +63,20 @@ DIRECTION_MERGE_THRESHOLD_M = 30.0
 # always sampled regardless.
 LABEL_INTERVAL_M = 3000.0
 
-# Douglas-Peucker tolerance applied after bundling to clean up the
-# staircase artifacts left by 2 m quantization and the centroid-jitter
-# from 18 m cross-route clustering.
+# Douglas-Peucker tolerance applied to each canonical edge after the
+# global bundle. With a single shared canonical there's no per-category
+# drift to flatten, so we can simplify aggressively without re-
+# introducing jitter — anything below this is collinear-ish enough to
+# drop without the human eye noticing.
 SMOOTH_TOLERANCE_M = 4.0
 
-# Cross-route bundling tolerance per category. Two routes' shapes
-# within this many metres of each other are bundled as a shared
-# corridor even when their GTFS shape points don't coincide exactly.
-# Set to 0 to fall back to tight (2 m grid) bundling for that category.
-CROSS_ROUTE_TOLERANCE_M: dict[str, float] = {
-    "spine": 25.0,
-    "orbital": 25.0,
-    "local": 25.0,
-    "peak": 25.0,
-    "radial": 25.0,
-}
+# Tolerance used by the single GLOBAL bundle across every route in the
+# city. Routes whose densified, projected points sit within this many
+# metres of each other share canonical edges. Tuned wider than typical
+# road width (~10 m) to absorb GTFS shape sampling noise (~5-10 m) and
+# bus lane offsets (~3-5 m), but tighter than typical one-way pair
+# spacing (Dublin's quays at ~50 m) so different streets stay distinct.
+GLOBAL_BUNDLE_TOLERANCE_M = 25.0
 
 
 _TO_ITM = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:2157", always_xy=True)
@@ -339,18 +337,14 @@ def build(
         if short and coords:
             stops_per_short_full[short] = coords
 
+    # Build a route_short_name -> category mapping and collect each
+    # route's TRUE-position geometry (no offset, no anchor). The
+    # global bundle below works on real road positions; offset is
+    # purely a render-time concern applied at the final split step.
+    all_routes_by_short: dict[str, list[LineString]] = {}
     for short, dirs in shapes_by_route.items():
         cat = categorise(short, high_frequency=short in hf_shorts)
         category_by_short[short] = cat
-
-        # Pass both directions to the bundle as separate components
-        # under the same sub_id. The cross-route snap-to-canonical
-        # bundle then handles bidirectional merging too: if dir0 and
-        # dir1 sit within 18 m of each other they snap to one trunk;
-        # if they diverge (e.g. one-way pair on the Liffey quays,
-        # 50 m apart) they stay as two parallel canonicals. Avoids
-        # combine_directions picking an inconsistent "primary"
-        # across routes that ends up confusing the bundling.
         components: list[LineString] = []
         for dir_id in (0, 1):
             line = dirs.get(dir_id)
@@ -361,48 +355,92 @@ def build(
         pre_offset_length_m[short] = sum(
             _project_itm(c).length for c in components
         )
+        all_routes_by_short[short] = components
+
+    # ---- Stage 1: global canonical road graph ----------------------------
+    # One bundle pass across every route, regardless of category. Routes
+    # within tolerance share the SAME canonical edge — the bundled
+    # geometry is type-agnostic, eliminating per-category drift.
+    canonical_features = bundle_routes(
+        all_routes_by_short,
+        tolerance_m=GLOBAL_BUNDLE_TOLERANCE_M,
+    )
+
+    # Smooth each canonical edge once. With a global graph there's no
+    # per-category centroid wobble, so a tighter tolerance preserves
+    # detail without re-introducing jitter.
+    for f in canonical_features:
+        geom = _shape(f["geometry"])
+        smoothed = smooth_line(geom, tolerance_m=SMOOTH_TOLERANCE_M)
+        f["geometry"] = {
+            "type": "LineString",
+            "coordinates": [list(c) for c in smoothed.coords],
+        }
+
+    # ---- Stage 2: per-category split with render-time offset -------------
+    # For each canonical edge, emit one Feature per category present.
+    # Each feature gets that category's perpendicular offset applied
+    # to the canonical geometry so the rendered map shows parallel
+    # lines on shared corridors instead of one line covering many.
+    all_segments: list[dict] = []
+    for f in canonical_features:
+        full_routes = list(f["properties"]["route_set"])
+        cats_present = sorted({
+            category_by_short[r] for r in full_routes if r in category_by_short
+        })
+        canonical_geom = _shape(f["geometry"])
+
+        for cat in cats_present:
+            offset_m = CATEGORY_OFFSET_M.get(cat, 0)
+            if offset_m:
+                offset_geom = offset_line(canonical_geom, offset_m)
+                geom_dict = {
+                    "type": "LineString",
+                    "coordinates": [list(c) for c in offset_geom.coords],
+                }
+            else:
+                geom_dict = f["geometry"]
+            cat_routes = sorted(
+                r for r in full_routes if category_by_short.get(r) == cat
+            )
+            phases = sorted({
+                short_to_phase.get(r, LEGACY_PHASE) for r in cat_routes
+            })
+            all_segments.append(
+                {
+                    "type": "Feature",
+                    "geometry": geom_dict,
+                    "properties": {
+                        "category": cat,
+                        "colour": category_colour(cat),
+                        "route_set": cat_routes,
+                        "full_route_set": sorted(full_routes),
+                        "route_count": len(cat_routes),
+                        "kind": "shared" if len(cat_routes) >= 2 else "single",
+                        "phases": phases,
+                    },
+                }
+            )
+
+    # Per-category routes_by_category for label generation. Labels
+    # project onto the OFFSET geometry per category, so they sit on
+    # the same parallel line the user sees rendered.
+    routes_by_category: dict[str, dict[str, list[LineString]]] = defaultdict(dict)
+    for short, components in all_routes_by_short.items():
+        cat = category_by_short.get(short, "radial")
         offset_m = CATEGORY_OFFSET_M.get(cat, 0)
         if offset_m:
-            components = [offset_line(c, offset_m) for c in components]
+            offset_components = [offset_line(c, offset_m) for c in components]
             stops = stops_per_short_full.get(short, [])
             if stops and len(stops) >= 2:
                 anchors = [stops[0], stops[-1]]
-                components = [
+                offset_components = [
                     anchor_to_stops(c, anchors, max_distance_m=offset_m + 8)
-                    for c in components
+                    for c in offset_components
                 ]
-
-        routes_by_category[cat][short] = components
-
-    # Bundle each category and emit a single Feature collection.
-    all_segments: list[dict] = []
-    for cat in CATEGORIES:
-        routes_in_cat = routes_by_category.get(cat, {})
-        if not routes_in_cat:
-            continue
-        tol = CROSS_ROUTE_TOLERANCE_M.get(cat, 0)
-        feats = bundle_routes(routes_in_cat, tolerance_m=tol if tol > 0 else None)
-        colour = category_colour(cat)
-        for f in feats:
-            # Smooth out staircase from 2 m bundling grid.
-            geom = _shape(f["geometry"])
-            smoothed = smooth_line(geom, tolerance_m=SMOOTH_TOLERANCE_M)
-            f["geometry"] = {
-                "type": "LineString",
-                "coordinates": [list(c) for c in smoothed.coords],
-            }
-            f["properties"]["category"] = cat
-            f["properties"]["colour"] = colour
-            # Attach the BusConnects rollout phase for any route on
-            # this segment. A segment with mixed phases lists every
-            # phase touching it; "legacy" goes in if any route on the
-            # segment isn't in the rollout map.
-            phases = sorted({
-                short_to_phase.get(r, LEGACY_PHASE)
-                for r in f["properties"]["route_set"]
-            })
-            f["properties"]["phases"] = phases
-        all_segments.extend(feats)
+            routes_by_category[cat][short] = offset_components
+        else:
+            routes_by_category[cat][short] = components
 
     segments_geojson = {"type": "FeatureCollection", "features": all_segments}
     routes_legacy = {"type": "FeatureCollection", "features": []}
