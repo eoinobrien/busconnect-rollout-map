@@ -45,8 +45,9 @@ DIRECTION_MERGE_THRESHOLD_M = 30.0
 LABEL_INTERVAL_M = 3000.0
 
 # Douglas-Peucker tolerance applied after bundling to clean up the
-# staircase artifacts left by 2 m quantization.
-SMOOTH_TOLERANCE_M = 3.0
+# staircase artifacts left by 2 m quantization and the centroid-jitter
+# from 18 m cross-route clustering.
+SMOOTH_TOLERANCE_M = 10.0
 
 # Cross-route bundling tolerance per category. Two routes' shapes
 # within this many metres of each other are bundled as a shared
