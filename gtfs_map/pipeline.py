@@ -48,6 +48,18 @@ LABEL_INTERVAL_M = 3000.0
 # staircase artifacts left by 2 m quantization.
 SMOOTH_TOLERANCE_M = 3.0
 
+# Cross-route bundling tolerance per category. Two routes' shapes
+# within this many metres of each other are bundled as a shared
+# corridor even when their GTFS shape points don't coincide exactly.
+# Set to 0 to fall back to tight (2 m grid) bundling for that category.
+CROSS_ROUTE_TOLERANCE_M: dict[str, float] = {
+    "spine": 18.0,
+    "orbital": 18.0,
+    "local": 18.0,
+    "peak": 18.0,
+    "radial": 18.0,
+}
+
 
 _TO_ITM = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:2157", always_xy=True)
 _TO_WGS = pyproj.Transformer.from_crs("EPSG:2157", "EPSG:4326", always_xy=True)
@@ -330,7 +342,8 @@ def build(
         routes_in_cat = routes_by_category.get(cat, {})
         if not routes_in_cat:
             continue
-        feats = bundle_routes(routes_in_cat)
+        tol = CROSS_ROUTE_TOLERANCE_M.get(cat, 0)
+        feats = bundle_routes(routes_in_cat, tolerance_m=tol if tol > 0 else None)
         colour = category_colour(cat)
         for f in feats:
             # Smooth out staircase from 2 m bundling grid.

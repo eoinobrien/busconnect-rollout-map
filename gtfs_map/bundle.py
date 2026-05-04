@@ -30,27 +30,23 @@ def _quantize(x: float, y: float) -> tuple[float, float]:
     return (round(x / _GRID_M) * _GRID_M, round(y / _GRID_M) * _GRID_M)
 
 
+def _components(geom: object) -> list[LineString]:
+    if isinstance(geom, LineString):
+        return [geom]
+    if isinstance(geom, MultiLineString):
+        return list(geom.geoms)
+    return [g for g in geom if isinstance(g, LineString)]
+
+
 def _edges_with_routes(
     sub_routes: dict[str, object],
 ) -> dict[frozenset, set[str]]:
-    """Walk every line, return a mapping from quantized undirected edge
-    (frozenset of two grid-snapped points) to the set of sub-route ids
-    that use it.
-
-    Each value in `sub_routes` may be a LineString, a MultiLineString,
-    or an iterable of LineStrings (e.g. the output of merge.combine_
-    directions). All components are attributed to the same sub-route
-    id.
-    """
+    """Tight bundling at the 2 m grid: two routes only share an edge if
+    their densified, grid-snapped points coincide exactly. Fast,
+    suitable for spine sub-routes whose shapes hug the same road."""
     edges: dict[frozenset, set[str]] = defaultdict(set)
     for sub_id, geom in sub_routes.items():
-        if isinstance(geom, LineString):
-            components = [geom]
-        elif isinstance(geom, MultiLineString):
-            components = list(geom.geoms)
-        else:
-            components = [g for g in geom if isinstance(g, LineString)]
-        for line in components:
+        for line in _components(geom):
             projected = _project(line, _TO_ITM)
             densified = shapely.segmentize(projected, max_segment_length=_DENSIFY_M)
             pts = [_quantize(x, y) for x, y in densified.coords]
@@ -58,6 +54,112 @@ def _edges_with_routes(
                 if a == b:
                     continue
                 edges[frozenset((a, b))].add(sub_id)
+    return edges
+
+
+def _edges_with_routes_loose(
+    sub_routes: dict[str, object],
+    tolerance_m: float,
+) -> dict[frozenset, set[str]]:
+    """Loose bundling via spatial clustering: any two densified points
+    within `tolerance_m` of each other end up at the same canonical
+    centroid before edges are built. Catches routes that share a road
+    but with shapes sampled differently (different lanes, different
+    sampling rates) — a 2 m grid would treat them as separate."""
+    from shapely.geometry import Point
+    from shapely.strtree import STRtree
+
+    # Step 1: project every component, densify, store points alongside
+    # the sub_id that produced them. Track which sub_routes each unique
+    # point belongs to so the cluster step can avoid merging points
+    # from the SAME route (which would collapse a long straight line
+    # of densified points into one cluster).
+    per_route_points: list[tuple[str, list[tuple[float, float]]]] = []
+    unique_pts: list[tuple[float, float]] = []
+    pt_index: dict[tuple[float, float], int] = {}
+    pt_route_sets: list[set[str]] = []
+
+    for sub_id, geom in sub_routes.items():
+        for line in _components(geom):
+            projected = _project(line, _TO_ITM)
+            densified = shapely.segmentize(projected, max_segment_length=_DENSIFY_M)
+            line_pts = [_quantize(x, y) for x, y in densified.coords]
+            per_route_points.append((sub_id, line_pts))
+            for p in line_pts:
+                idx = pt_index.get(p)
+                if idx is None:
+                    pt_index[p] = len(unique_pts)
+                    unique_pts.append(p)
+                    pt_route_sets.append({sub_id})
+                else:
+                    pt_route_sets[idx].add(sub_id)
+
+    if not unique_pts:
+        return {}
+
+    # Step 2: union-find spatial cluster within tolerance_m. The key
+    # constraint: two clusters only merge if their CURRENT route sets
+    # are disjoint. Otherwise a chain of unions A0-B0-A1-B1... would
+    # collapse every point on a long parallel pair into one mega-
+    # cluster (because each individual union "looks" disjoint at the
+    # point level even when the growing cluster already contains both
+    # routes).
+    point_geoms = [Point(p) for p in unique_pts]
+    tree = STRtree(point_geoms)
+    parent = list(range(len(unique_pts)))
+    cluster_routes: dict[int, set[str]] = {
+        i: set(pt_route_sets[i]) for i in range(len(unique_pts))
+    }
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def try_union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            return
+        if not cluster_routes[ra].isdisjoint(cluster_routes[rb]):
+            return  # merging would put two same-route points in one cluster
+        parent[ra] = rb
+        cluster_routes[rb] |= cluster_routes[ra]
+        del cluster_routes[ra]
+
+    for i, g in enumerate(point_geoms):
+        for j in tree.query(g.buffer(tolerance_m)):
+            if j == i:
+                continue
+            if g.distance(point_geoms[j]) <= tolerance_m:
+                try_union(i, j)
+
+    # Step 3: canonical position per cluster — the centroid keeps the
+    # bundled line near the average of the input shapes rather than
+    # snapping to any one route's geometry.
+    cluster_members: dict[int, list[int]] = defaultdict(list)
+    for i in range(len(unique_pts)):
+        cluster_members[find(i)].append(i)
+    canonical: dict[tuple[float, float], tuple[float, float]] = {}
+    for root, members in cluster_members.items():
+        cx = sum(unique_pts[i][0] for i in members) / len(members)
+        cy = sum(unique_pts[i][1] for i in members) / len(members)
+        for i in members:
+            canonical[unique_pts[i]] = (cx, cy)
+
+    # Step 4: build edges using canonical positions.
+    edges: dict[frozenset, set[str]] = defaultdict(set)
+    for sub_id, pts in per_route_points:
+        snapped = [canonical[p] for p in pts]
+        # Drop consecutive duplicates introduced by clustering.
+        cleaned: list[tuple[float, float]] = []
+        for p in snapped:
+            if not cleaned or cleaned[-1] != p:
+                cleaned.append(p)
+        for a, b in zip(cleaned, cleaned[1:]):
+            if a == b:
+                continue
+            edges[frozenset((a, b))].add(sub_id)
     return edges
 
 
@@ -75,9 +177,19 @@ def _merge_edges_to_lines(
     return list(merged.geoms)
 
 
-def bundle_routes(routes: dict[str, LineString]) -> list[dict]:
+def bundle_routes(
+    routes: dict[str, LineString], tolerance_m: float | None = None
+) -> list[dict]:
     """Topologically bundle a set of routes into shared-vs-single
     segments.
+
+    `tolerance_m` controls how close two routes' shapes need to be to
+    bundle:
+      None or <=2: tight 2 m grid (default — preserves geometry, only
+                   bundles routes that hug the same road samples).
+      else:        spatial clustering at the given metres — routes
+                   whose shapes are within `tolerance_m` of each other
+                   bundle even if their GTFS shapes differ slightly.
 
     Returns a list of GeoJSON-style Feature dicts where each Feature
     represents the longest contiguous run of road traversed by the
@@ -85,12 +197,11 @@ def bundle_routes(routes: dict[str, LineString]) -> list[dict]:
       route_set:   list of route ids on this segment
       route_count: len(route_set)
       kind:        "shared" if route_count >= 2, else "single"
-
-    Inputs are LineStrings in WGS84 (lon, lat). Geometry is projected
-    to Irish Transverse Mercator for metric snapping (5 m densify, 2 m
-    grid quantization), then un-projected for the output Features.
     """
-    edge_routes = _edges_with_routes(routes)
+    if tolerance_m is not None and tolerance_m > _GRID_M * 1.5:
+        edge_routes = _edges_with_routes_loose(routes, tolerance_m)
+    else:
+        edge_routes = _edges_with_routes(routes)
 
     # Group edges by the set of routes that share them.
     edges_by_key: dict[frozenset, list] = defaultdict(list)
