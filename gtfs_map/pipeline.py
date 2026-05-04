@@ -35,7 +35,7 @@ DIRECTION_MERGE_THRESHOLD_M = 30.0
 
 # Approximate spacing between mid-route badges (in metres). Termini are
 # always sampled regardless.
-LABEL_INTERVAL_M = 1500.0
+LABEL_INTERVAL_M = 3000.0
 
 
 _TO_ITM = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:2157", always_xy=True)
