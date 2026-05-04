@@ -143,6 +143,32 @@ def test_disjoint_routes_each_render_straight():
         )
 
 
+def test_canonical_position_anchored_to_longest_route():
+    # Long route A and short route B run on the same corridor. After
+    # bundling, the shared trunk should sit exactly on A's geometry,
+    # not on a midpoint between A and B (which would produce centroid
+    # jitter when the pairing isn't perfect).
+    a = LineString([
+        (-6.30 + i * 0.001, 53.30) for i in range(60)
+    ])  # ~6 km long
+    b = LineString([
+        (-6.27 + i * 0.001, 53.30005) for i in range(20)
+    ])  # ~2 km, parallel ~5.5 m north of A
+
+    bundled = _bundle_and_smooth({"A": a, "B": b}, tolerance_m=20.0, smooth_m=2.0)
+    shared = [bb for bb in bundled if ("A", "B") == tuple(sorted(bb["feature"]["properties"]["route_set"]))]
+    assert shared, "expected an A+B shared segment"
+
+    # The shared segment's lat should be A's lat (53.30), not the
+    # midpoint (~53.300025).
+    for s in shared:
+        for lon, lat in s["geom"].coords:
+            assert abs(lat - 53.30) < 0.00002, (
+                f"shared trunk lat {lat} should snap to A's 53.30, "
+                f"not centroid 53.300025"
+            )
+
+
 def test_l_shaped_sharing_keeps_corner_clean():
     # Two routes share a 5 km east leg, then diverge: A turns north,
     # B continues east. The corner at (-6.20, 53.30) should be sharp;
