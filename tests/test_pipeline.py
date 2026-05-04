@@ -8,10 +8,6 @@ import pytest  # noqa: F401  (used as pytest.approx)
 from gtfs_map.pipeline import build
 
 
-# A tiny GTFS feed with three agencies (one we want to drop), three
-# routes (one spine pair A1+A2, one numeric, one commuter we should
-# drop), and a calendar with one weekday service and one Sunday-only
-# service.
 AGENCY_TXT = (
     "agency_id,agency_name,agency_url,agency_timezone\n"
     "7778019,Dublin Bus,https://www.dublinbus.ie/,Europe/London\n"
@@ -61,6 +57,17 @@ SHAPES_TXT = (
 )
 
 
+# A minimal stop_times file. No row's first stop falls in 08:00-08:59,
+# so no fixture route should be promoted to high-frequency.
+STOP_TIMES_TXT = (
+    "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,timepoint\n"
+    "T_A1,07:00:00,07:00:00,X,1,,0,0,1\n"
+    "T_A2,07:05:00,07:05:00,X,1,,0,0,1\n"
+    "T_46,07:10:00,07:10:00,X,1,,0,0,1\n"
+    "T_120,07:15:00,07:15:00,X,1,,0,0,1\n"
+)
+
+
 @pytest.fixture
 def fake_gtfs(tmp_path: Path) -> Path:
     d = tmp_path / "gtfs"
@@ -71,48 +78,52 @@ def fake_gtfs(tmp_path: Path) -> Path:
     (d / "calendar_dates.txt").write_text(CAL_DATES_TXT)
     (d / "trips.txt").write_text(TRIPS_TXT)
     (d / "shapes.txt").write_text(SHAPES_TXT)
+    (d / "stop_times.txt").write_text(STOP_TIMES_TXT)
     return d
 
 
+def _features(segments):
+    return segments["features"]
+
+
 def test_build_excludes_commuter_agency_7778006(fake_gtfs):
-    spines, routes, meta = build(fake_gtfs, "2026-05-05")  # Tuesday
-
-    all_features = spines["features"] + routes["features"]
-    for f in all_features:
-        # Properties must never reveal a commuter route
-        assert "120" != f["properties"].get("route_short_name", "")
-        for sub in f["properties"].get("route_set", []):
-            assert sub != "120"
+    segments, _, _ = build(fake_gtfs, "2026-05-05")
+    for f in _features(segments):
+        for r in f["properties"].get("route_set", []):
+            assert r != "120", "commuter route 120 leaked into output"
 
 
-def test_build_groups_spine_routes_under_their_letter(fake_gtfs):
-    spines, _, _ = build(fake_gtfs, "2026-05-05")
-    spine_letters = {f["properties"]["spine"] for f in spines["features"]}
-    assert spine_letters == {"A"}
+def test_spine_routes_appear_in_segments_with_spine_category(fake_gtfs):
+    segments, _, _ = build(fake_gtfs, "2026-05-05")
+    spine_features = [f for f in _features(segments) if f["properties"]["category"] == "spine"]
+    assert spine_features, "expected spine features for A1+A2"
+    # Every spine feature should be coloured red.
+    for f in spine_features:
+        assert f["properties"]["colour"].lower() == "#d62728"
 
 
-def test_build_produces_a_trunk_segment_for_shared_a1_a2(fake_gtfs):
-    spines, _, _ = build(fake_gtfs, "2026-05-05")
-    trunks = [f for f in spines["features"] if f["properties"]["kind"] == "trunk"]
-    assert len(trunks) >= 1
-    assert all(
-        sorted(t["properties"]["route_set"]) == ["A1", "A2"] for t in trunks
-    )
+def test_a1_a2_share_a_segment(fake_gtfs):
+    segments, _, _ = build(fake_gtfs, "2026-05-05")
+    shared = [
+        f for f in _features(segments)
+        if f["properties"]["category"] == "spine"
+        and f["properties"]["kind"] == "shared"
+    ]
+    assert shared, "A1+A2 should produce at least one shared segment"
+    for f in shared:
+        assert sorted(f["properties"]["route_set"]) == ["A1", "A2"]
 
 
-def test_build_includes_non_spine_route_46(fake_gtfs):
-    _, routes, _ = build(fake_gtfs, "2026-05-05")
-    short_names = {f["properties"]["route_short_name"] for f in routes["features"]}
-    assert "46" in short_names
+def test_radial_route_46_appears_with_radial_category(fake_gtfs):
+    segments, _, _ = build(fake_gtfs, "2026-05-05")
+    radial = [f for f in _features(segments) if f["properties"]["category"] == "radial"]
+    routes_in_radial = {r for f in radial for r in f["properties"]["route_set"]}
+    assert "46" in routes_in_radial
 
 
 def test_build_filters_out_sunday_only_services_on_a_weekday(fake_gtfs):
-    # If we asked for the same Tuesday, the SUN service shouldn't add
-    # anything beyond what WK already provides.
     _, _, meta = build(fake_gtfs, "2026-05-05")
-    assert "SUN" not in meta.get("active_services", []), (
-        "Sunday service must not be active on a Tuesday"
-    )
+    assert "SUN" not in meta.get("active_services", [])
 
 
 def test_build_meta_records_reference_date(fake_gtfs):
@@ -120,46 +131,38 @@ def test_build_meta_records_reference_date(fake_gtfs):
     assert meta["reference_date"] == "2026-05-05"
 
 
-def test_spine_features_are_coloured_red_and_categorised_spine(fake_gtfs):
-    spines, _, _ = build(fake_gtfs, "2026-05-05")
-    for f in spines["features"]:
-        p = f["properties"]
-        assert p["category"] == "spine"
-        assert p["colour"].lower() == "#d62728"
+def test_build_meta_records_high_frequency_settings(fake_gtfs):
+    _, _, meta = build(fake_gtfs, "2026-05-05")
+    assert meta["high_frequency_threshold"] == 5
+    assert meta["high_frequency_hour"] == 8
+    # Fixture has no 8am trips, so no fixture route should have been
+    # promoted to spine via frequency.
+    assert meta["high_frequency_route_count"] == 0
 
 
-def test_non_spine_features_carry_their_category_and_colour(fake_gtfs):
-    _, routes, _ = build(fake_gtfs, "2026-05-05")
-    # The fixture only has '46' (radial) so far.
-    assert routes["features"], "fixture should produce some non-spine routes"
-    cats = {f["properties"]["category"] for f in routes["features"]}
-    assert "radial" in cats
-    for f in routes["features"]:
-        p = f["properties"]
-        assert "colour" in p
-        assert "category" in p
-
-
-def test_build_emits_a_label_feature_collection_with_route_termini(fake_gtfs):
-    spines, routes, _, labels = build(fake_gtfs, "2026-05-05", with_labels=True)
-    # One label per (route_short_name, terminus) — we expect at least
-    # one for each route in the fixture: A1, A2, 46.
-    short_names = {f["properties"]["route_short_name"] for f in labels["features"]}
-    assert {"A1", "A2", "46"} <= short_names
-
-    # Each label is a Point with a colour and a category.
+def test_labels_collection_has_one_feature_per_terminus_with_routes_list(fake_gtfs):
+    _, _, _, labels = build(fake_gtfs, "2026-05-05", with_labels=True)
+    assert labels["features"]
     for f in labels["features"]:
         assert f["geometry"]["type"] == "Point"
-        assert "colour" in f["properties"]
+        assert "routes" in f["properties"]
+        assert isinstance(f["properties"]["routes"], list)
+        assert "label" in f["properties"]
         assert "category" in f["properties"]
+        assert "colour" in f["properties"]
 
 
-def test_labels_for_a_route_sit_at_either_end_of_its_shape(fake_gtfs):
+def test_routes_sharing_a_terminus_get_one_combined_label(fake_gtfs):
+    # A1 and A2 both start at (-6.30, 53.30). The terminus clustering
+    # should produce a single label whose `routes` list contains both.
     _, _, _, labels = build(fake_gtfs, "2026-05-05", with_labels=True)
-    a1_labels = [f for f in labels["features"] if f["properties"]["route_short_name"] == "A1"]
-    # A1 should have at least its start and end as label positions.
-    assert len(a1_labels) >= 2
-    coords = sorted(tuple(f["geometry"]["coordinates"]) for f in a1_labels)
-    # A1 in the fixture goes (-6.30, 53.30) -> ... -> (-6.20, 53.40)
-    assert coords[0][0] == pytest.approx(-6.30, abs=0.01)
-    assert coords[-1][1] == pytest.approx(53.40, abs=0.01)
+    shared_origin = [
+        f for f in labels["features"]
+        if {"A1", "A2"} <= set(f["properties"]["routes"])
+    ]
+    assert shared_origin, "expected A1+A2 to share a clustered start label"
+
+
+def test_route_46_appears_in_some_label(fake_gtfs):
+    _, _, _, labels = build(fake_gtfs, "2026-05-05", with_labels=True)
+    assert any("46" in f["properties"]["routes"] for f in labels["features"])

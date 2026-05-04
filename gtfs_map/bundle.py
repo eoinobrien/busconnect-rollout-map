@@ -62,27 +62,28 @@ def _merge_edges_to_lines(
     return list(merged.geoms)
 
 
-def bundle_spine(sub_routes: dict[str, LineString]) -> list[dict]:
-    """Topologically bundle the sub-routes of a BusConnects spine.
+def bundle_routes(routes: dict[str, LineString]) -> list[dict]:
+    """Topologically bundle a set of routes into shared-vs-single
+    segments.
 
-    Returns a list of GeoJSON-style Feature dicts. Edges shared by
-    every sub-route in the spine are emitted as kind="trunk"; edges
-    shared by some-but-not-all (or only one) sub-route are emitted as
-    kind="branch". Each Feature's `route_set` lists exactly the sub-
-    routes that traverse that segment.
+    Returns a list of GeoJSON-style Feature dicts where each Feature
+    represents the longest contiguous run of road traversed by the
+    same set of routes. Properties:
+      route_set:   list of route ids on this segment
+      route_count: len(route_set)
+      kind:        "shared" if route_count >= 2, else "single"
 
     Inputs are LineStrings in WGS84 (lon, lat). Geometry is projected
     to Irish Transverse Mercator for metric snapping (5 m densify, 2 m
     grid quantization), then un-projected for the output Features.
     """
-    spine_size = len(sub_routes)
-    edge_routes = _edges_with_routes(sub_routes)
+    edge_routes = _edges_with_routes(routes)
 
-    # Group edges by the set of sub-routes that share them.
+    # Group edges by the set of routes that share them.
     edges_by_key: dict[frozenset, list] = defaultdict(list)
-    for edge_key, routes in edge_routes.items():
+    for edge_key, route_ids in edge_routes.items():
         a, b = sorted(edge_key)
-        edges_by_key[frozenset(routes)].append((a, b))
+        edges_by_key[frozenset(route_ids)].append((a, b))
 
     features: list[dict] = []
     for routes_fs, edges in edges_by_key.items():
@@ -95,10 +96,21 @@ def bundle_spine(sub_routes: dict[str, LineString]) -> list[dict]:
                     "properties": {
                         "route_set": sorted(routes_fs),
                         "route_count": len(routes_fs),
-                        "kind": (
-                            "trunk" if len(routes_fs) == spine_size else "branch"
-                        ),
+                        "kind": "shared" if len(routes_fs) >= 2 else "single",
                     },
                 }
             )
     return features
+
+
+# Back-compat alias used by older callers / tests still on "trunk/branch"
+# terminology. Treats the whole input as a spine: shared-by-all → trunk,
+# everything else → branch.
+def bundle_spine(sub_routes: dict[str, LineString]) -> list[dict]:
+    spine_size = len(sub_routes)
+    feats = bundle_routes(sub_routes)
+    for f in feats:
+        f["properties"]["kind"] = (
+            "trunk" if f["properties"]["route_count"] == spine_size else "branch"
+        )
+    return feats
