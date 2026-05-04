@@ -31,33 +31,55 @@ def offset_line(line: LineString, distance_m: float) -> LineString:
     """Return a parallel-offset copy of `line` shifted by distance_m
     metres to the right of its direction of travel.
 
-    distance_m == 0 returns the input unchanged. If the offset
-    operation fails (self-intersecting urban geometries, degenerate
-    inputs) the original line is returned so the pipeline never loses
-    data.
+    Uses a manual perpendicular shift per vertex (averaging the
+    surrounding segment normals) rather than shapely.parallel_offset,
+    which has a habit of dropping pieces at sharp corners and
+    returning a fragmented MultiLineString. The manual version is
+    guaranteed to keep the same vertex count as the input, so there
+    are no gaps in the output.
+
+    distance_m == 0 returns the input unchanged.
     """
     if distance_m == 0 or len(line.coords) < 2:
         return line
 
-    proj_coords = [_TO_ITM.transform(x, y) for x, y in line.coords]
-    proj = LineString(proj_coords)
-    if proj.length < 1.0:
-        return line
+    # Project to ITM so distances are in metres.
+    proj = [_TO_ITM.transform(x, y) for x, y in line.coords]
+    n = len(proj)
 
-    try:
-        offset = proj.parallel_offset(
-            distance_m, side="right", join_style=2, mitre_limit=2.0
-        )
-    except Exception:
-        return line
+    # Per-segment unit normal pointing right of travel.
+    # For a segment (x1,y1)->(x2,y2): direction (dx,dy)/L, right normal
+    # is (dy,-dx)/L.
+    seg_normals: list[tuple[float, float]] = []
+    for i in range(n - 1):
+        x1, y1 = proj[i]
+        x2, y2 = proj[i + 1]
+        dx, dy = x2 - x1, y2 - y1
+        L = (dx * dx + dy * dy) ** 0.5
+        if L < 1e-9:
+            seg_normals.append((0.0, 0.0))
+        else:
+            seg_normals.append((dy / L, -dx / L))
 
-    if offset.is_empty:
-        return line
-    if isinstance(offset, MultiLineString):
-        # Pick the longest piece.
-        offset = max(offset.geoms, key=lambda g: g.length)
-    if not isinstance(offset, LineString) or len(offset.coords) < 2:
-        return line
+    # Per-vertex normal: average of adjacent segments.
+    out_proj: list[tuple[float, float]] = []
+    for i in range(n):
+        if i == 0:
+            nx, ny = seg_normals[0]
+        elif i == n - 1:
+            nx, ny = seg_normals[-1]
+        else:
+            a = seg_normals[i - 1]
+            b = seg_normals[i]
+            nx = a[0] + b[0]
+            ny = a[1] + b[1]
+            mag = (nx * nx + ny * ny) ** 0.5
+            if mag < 1e-9:
+                nx, ny = b
+            else:
+                nx /= mag
+                ny /= mag
+        x, y = proj[i]
+        out_proj.append((x + nx * distance_m, y + ny * distance_m))
 
-    back = [_TO_WGS.transform(x, y) for x, y in offset.coords]
-    return LineString(back)
+    return LineString([_TO_WGS.transform(x, y) for x, y in out_proj])

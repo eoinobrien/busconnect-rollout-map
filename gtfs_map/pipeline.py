@@ -17,6 +17,7 @@ from shapely.geometry import Point as _Point
 from .anchor import anchor_to_stops
 from .bundle import bundle_routes
 from .category import CATEGORY_COLOURS, categorise, category_colour
+from .consolidate import consolidate_features
 from .frequency import high_frequency_route_ids_from_files
 from .merge import combine_directions
 from .offset import CATEGORY_OFFSET_M, offset_line
@@ -381,6 +382,15 @@ def build(
             "type": "LineString",
             "coordinates": [list(c) for c in smoothed.coords],
         }
+
+    # Consolidate fragmented canonical edges. Adjacent edges whose
+    # route_sets overlap >50% (Jaccard) merge into one feature with
+    # the union of routes — collapses runs like {C1-C6}, {C1-C5},
+    # {C1-C4}, {4,C1-C6} along the same Heuston quay into a single
+    # feature listing every route on that stretch.
+    canonical_features = consolidate_features(
+        canonical_features, jaccard_threshold=0.5
+    )
 
     # ---- Stage 2: per-category split with render-time offset -------------
     # For each canonical edge, emit one Feature per category present.
