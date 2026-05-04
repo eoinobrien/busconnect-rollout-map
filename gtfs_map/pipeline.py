@@ -54,6 +54,44 @@ def _project_itm(geom):
     return transform(lambda x, y, z=None: _TO_ITM.transform(x, y), geom)
 
 
+_LABEL_CLUSTER_M = 60.0
+
+
+def _spatial_cluster(points_itm: list[tuple[float, float]]) -> list[int]:
+    """Union-find clustering: any two points within _LABEL_CLUSTER_M
+    metres of each other end up in the same cluster. Returns a parallel
+    list assigning each input point a cluster id (root index)."""
+    if not points_itm:
+        return []
+    from shapely.geometry import Point
+    from shapely.strtree import STRtree
+
+    geoms = [Point(p) for p in points_itm]
+    tree = STRtree(geoms)
+    parent = list(range(len(points_itm)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: int, b: int) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    for i, g in enumerate(geoms):
+        # Buffer-then-query gets every point whose envelope overlaps;
+        # filter exact distance to avoid false unions on diagonal cases.
+        for j in tree.query(g.buffer(_LABEL_CLUSTER_M)):
+            if j == i:
+                continue
+            if g.distance(geoms[j]) <= _LABEL_CLUSTER_M:
+                union(i, j)
+    return [find(i) for i in range(len(points_itm))]
+
+
 def _label_features(
     routes_by_category: dict[str, dict[str, list[LineString]]],
     category_by_short: dict[str, str],
@@ -74,21 +112,8 @@ def _label_features(
     stops resolved (e.g. its representative trip's stop_times rows
     weren't loaded).
     """
-    bucket_grid = 0.0003  # ~33 m at Dublin's latitude
-    bucket: dict[tuple[float, float], dict] = {}
-
-    def _add(lon: float, lat: float, short: str, cat: str) -> None:
-        key = (
-            round(lon / bucket_grid) * bucket_grid,
-            round(lat / bucket_grid) * bucket_grid,
-        )
-        entry = bucket.setdefault(
-            key,
-            {"lon": lon, "lat": lat, "routes": [], "categories": set()},
-        )
-        if short not in entry["routes"]:
-            entry["routes"].append(short)
-            entry["categories"].add(cat)
+    # Stage 1: collect every (lon, lat, short, cat) sample point.
+    samples: list[tuple[float, float, str, str]] = []  # lon, lat, short, cat
 
     for cat in CATEGORIES:
         for short, components in routes_by_category.get(cat, {}).items():
@@ -98,7 +123,7 @@ def _label_features(
                 target_k = max(2, round(total_m / LABEL_INTERVAL_M) + 1)
                 for idx in sample_stop_indices(len(stops), target_k):
                     lon, lat = stops[idx]
-                    _add(lon, lat, short, cat)
+                    samples.append((lon, lat, short, cat))
             else:
                 # No stop data — fall back to interpolation along the line.
                 for line in components:
@@ -111,31 +136,49 @@ def _label_features(
                         d = length_m * i / (n_samples - 1)
                         pt_itm = line_itm.interpolate(d)
                         lon, lat = _TO_WGS.transform(pt_itm.x, pt_itm.y)
-                        _add(lon, lat, short, cat)
+                        samples.append((lon, lat, short, cat))
+
+    if not samples:
+        return []
+
+    # Stage 2: spatial-cluster samples within _LABEL_CLUSTER_M metres
+    # so a busy junction served by 8 routes — even with stops on
+    # opposite sides of a wide road — produces ONE combined badge.
+    points_itm = [_TO_ITM.transform(lon, lat) for lon, lat, _, _ in samples]
+    cluster_ids = _spatial_cluster(points_itm)
+
+    clusters: dict[int, dict] = {}
+    for (lon, lat, short, cat), cid in zip(samples, cluster_ids):
+        entry = clusters.setdefault(
+            cid,
+            {"sum_lon": 0.0, "sum_lat": 0.0, "n": 0, "routes": [], "categories": set()},
+        )
+        entry["sum_lon"] += lon
+        entry["sum_lat"] += lat
+        entry["n"] += 1
+        if short not in entry["routes"]:
+            entry["routes"].append(short)
+            entry["categories"].add(cat)
 
     out: list[dict] = []
-    for entry in bucket.values():
-        # Pick the most "important" category present here for the badge colour.
+    for entry in clusters.values():
         cat = next(
             (c for c in CATEGORIES if c in entry["categories"]),
             "radial",
         )
-        # Sort: spines first, then alphanumeric.
         routes = sorted(
             entry["routes"],
             key=lambda r: (CATEGORIES.index(category_by_short.get(r, "radial")), r),
         )
+        # Place the badge at the cluster centroid.
+        lon = entry["sum_lon"] / entry["n"]
+        lat = entry["sum_lat"] / entry["n"]
         out.append(
             {
                 "type": "Feature",
-                "geometry": {
-                    "type": "Point",
-                    "coordinates": [entry["lon"], entry["lat"]],
-                },
+                "geometry": {"type": "Point", "coordinates": [lon, lat]},
                 "properties": {
                     "routes": routes,
-                    # Full list, no +N truncation. The viewer wraps
-                    # multiple route names onto multiple lines.
                     "label": ", ".join(routes),
                     "route_count": len(routes),
                     "category": cat,
@@ -232,6 +275,15 @@ def build(
         short_by_id[rid] for rid in hf_route_ids if rid in short_by_id
     }
 
+    # Resolve each route's first and last stop so we can extend the
+    # rendered geometry to actually touch them.
+    stops_by_route_id = stops_for_active_routes(gtfs_dir, trips)
+    stops_per_short_full: dict[str, list[tuple[float, float]]] = {}
+    for rid, coords in stops_by_route_id.items():
+        short = short_by_id.get(rid)
+        if short and coords:
+            stops_per_short_full[short] = coords
+
     for short, dirs in shapes_by_route.items():
         cat = categorise(short, high_frequency=short in hf_shorts)
         category_by_short[short] = cat
@@ -252,6 +304,26 @@ def build(
         offset_m = CATEGORY_OFFSET_M.get(cat, 0)
         if offset_m:
             components = [offset_line(c, offset_m) for c in components]
+
+        # Extend the primary component out to the first and last stops
+        # so the rendered line actually reaches its termini. The offset
+        # otherwise pushes endpoints ~16 m off-position from where the
+        # stop badge sits.
+        stops = stops_per_short_full.get(short, [])
+        if components and stops and len(stops) >= 2:
+            primary_line = components[0]
+            coords = list(primary_line.coords)
+            first_stop = stops[0]
+            last_stop = stops[-1]
+            new_coords: list[tuple[float, float]] = list(coords)
+            if first_stop != coords[0]:
+                new_coords = [first_stop] + new_coords
+            if last_stop != coords[-1]:
+                new_coords = new_coords + [last_stop]
+            if len(new_coords) != len(coords):
+                from shapely.geometry import LineString as _LS
+                components[0] = _LS(new_coords)
+
         routes_by_category[cat][short] = components
 
     # Bundle each category and emit a single Feature collection.
@@ -298,14 +370,8 @@ def build(
     if not with_labels:
         return segments_geojson, routes_legacy, meta
 
-    # Resolve each route's stop sequence so labels can sit on real
-    # stops (with first and last always present).
-    stops_by_route_id = stops_for_active_routes(gtfs_dir, trips)
-    stops_per_short: dict[str, list[tuple[float, float]]] = {}
-    for rid, coords in stops_by_route_id.items():
-        short = short_by_id.get(rid)
-        if short and coords:
-            stops_per_short[short] = coords
+    # Reuse the stops already resolved for line-extension above.
+    stops_per_short = stops_per_short_full
 
     labels = {
         "type": "FeatureCollection",

@@ -62,15 +62,17 @@
       width: 100%;
       box-sizing: border-box;
     }
-    /* Leaflet's marker-icon parent sizes via iconSize. We pick a per-
-       badge size in JS so multi-route lists wrap onto multiple lines
-       inside their own container instead of breaking every character
-       against a default ~20 px wrapper. */
+    /* Leaflet's marker-icon parent sizes via iconSize. Override its
+       default white-background-with-border styling so the badge child
+       can paint cleanly instead of double-bordering. */
+    .route-badge-wrapper,
     .leaflet-div-icon.route-badge-wrapper {
-      background: transparent;
-      border: 0;
-      box-shadow: none;
-      padding: 0;
+      background: transparent !important;
+      border: 0 !important;
+      box-shadow: none !important;
+      padding: 0 !important;
+      width: auto !important;
+      height: auto !important;
     }
 
     /* Applied to badges that don't belong to the currently-selected
@@ -288,15 +290,20 @@
         const p = f.properties;
         const [lon, lat] = f.geometry.coordinates;
         // Estimate badge size from text so the leaflet container is
-        // wide enough to let it wrap to multiple lines instead of one
-        // character per line. ~6.5 px/char @ font-size 10, +14 px
-        // padding+border. Cap at 200 px wide; height grows by ~16 px
-        // per visual line.
+        // wide enough to let multi-route labels wrap onto multiple
+        // lines without breaking every character. Account for an even
+        // border + padding budget so single- and multi-route badges
+        // get a consistent visual frame.
         const charWidth = 6.5;
-        const naturalWidth = p.label.length * charWidth + 14;
-        const width = Math.min(200, Math.max(22, naturalWidth));
-        const lines = Math.max(1, Math.ceil(naturalWidth / width));
-        const height = lines * 16 + 4;
+        const horizontalPadding = 16;  // 2x6 padding + 2x2 border
+        const verticalPadding = 8;     // 2x2 padding + 2x2 border
+        const lineHeight = 13;
+        const naturalWidth = p.label.length * charWidth + horizontalPadding;
+        const width = Math.min(180, Math.max(24, naturalWidth));
+        const lines = Math.max(1, Math.ceil(
+          (p.label.length * charWidth) / (width - horizontalPadding)
+        ));
+        const height = lines * lineHeight + verticalPadding;
         const html = `<div class="route-badge" style="--c:${p.colour}" title="${p.routes.join(', ')}">${p.label}</div>`;
         const marker = L.marker([lat, lon], {
           icon: L.divIcon({
