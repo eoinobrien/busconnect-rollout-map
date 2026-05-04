@@ -21,16 +21,18 @@ CATEGORY_COLOURS: dict[str, str] = {
 }
 
 
-def categorise(route_short_name: str) -> str:
+def categorise(route_short_name: str, *, high_frequency: bool = False) -> str:
     """Return the high-level category of a route by short-name prefix.
 
     spine    — A-H followed by digits only (BusConnects spine sub-routes)
+               OR any route promoted via high_frequency=True (>=5 trips
+               per hour at peak — drawn red on the map alongside spines)
     orbital  — W*, N*, S* (orbitals/cross-town)
     local    — L*
     peak     — P*, X* (peak-only / express)
     radial   — everything else (typically plain numeric radial routes)
     """
-    if _SPINE_RE.match(route_short_name):
+    if high_frequency or _SPINE_RE.match(route_short_name):
         return "spine"
     first = route_short_name[:1]
     if first == "L":

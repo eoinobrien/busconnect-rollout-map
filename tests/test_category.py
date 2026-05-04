@@ -69,3 +69,19 @@ def test_category_colours_match_the_brief():
 def test_category_colours_dict_matches_function():
     for cat in CATEGORY_COLOURS:
         assert category_colour(cat) == CATEGORY_COLOURS[cat]
+
+
+def test_high_frequency_flag_promotes_any_route_to_spine():
+    # A plain numeric route normally lands in radial; with the
+    # high_frequency flag set it should be drawn red as a spine.
+    assert categorise("13") == "radial"
+    assert categorise("13", high_frequency=True) == "spine"
+    # Locals/orbitals/peak likewise upgrade to spine when high-freq.
+    assert categorise("L25", high_frequency=True) == "spine"
+    assert categorise("N4", high_frequency=True) == "spine"
+    assert categorise("X1", high_frequency=True) == "spine"
+
+
+def test_lettered_spines_stay_spine_regardless_of_frequency_flag():
+    assert categorise("C1", high_frequency=False) == "spine"
+    assert categorise("C1", high_frequency=True) == "spine"
