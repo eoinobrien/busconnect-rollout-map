@@ -58,13 +58,29 @@ SHAPES_TXT = (
 
 
 # A minimal stop_times file. No row's first stop falls in 08:00-08:59,
-# so no fixture route should be promoted to high-frequency.
+# so no fixture route should be promoted to high-frequency. Each trip
+# has at least 2 stops so label generation finds a real start and end.
 STOP_TIMES_TXT = (
     "trip_id,arrival_time,departure_time,stop_id,stop_sequence,stop_headsign,pickup_type,drop_off_type,timepoint\n"
-    "T_A1,07:00:00,07:00:00,X,1,,0,0,1\n"
-    "T_A2,07:05:00,07:05:00,X,1,,0,0,1\n"
-    "T_46,07:10:00,07:10:00,X,1,,0,0,1\n"
-    "T_120,07:15:00,07:15:00,X,1,,0,0,1\n"
+    "T_A1,07:00:00,07:00:00,SA1,1,,0,0,1\n"
+    "T_A1,07:05:00,07:05:00,SA2,2,,0,0,1\n"
+    "T_A2,07:00:00,07:00:00,SA1,1,,0,0,1\n"
+    "T_A2,07:05:00,07:05:00,SA3,2,,0,0,1\n"
+    "T_46,07:10:00,07:10:00,S46A,1,,0,0,1\n"
+    "T_46,07:15:00,07:15:00,S46B,2,,0,0,1\n"
+    "T_120,07:15:00,07:15:00,S120A,1,,0,0,1\n"
+    "T_120,07:20:00,07:20:00,S120B,2,,0,0,1\n"
+)
+
+STOPS_TXT = (
+    "stop_id,stop_name,stop_lat,stop_lon\n"
+    "SA1,A1/A2 origin,53.30,-6.30\n"     # A1 and A2 share the start at (-6.30, 53.30)
+    "SA2,A1 east end,53.40,-6.20\n"
+    "SA3,A2 north end,53.30,-6.10\n"
+    "S46A,46 start,53.35,-6.25\n"
+    "S46B,46 end,53.36,-6.24\n"
+    "S120A,120 start,53.30,-7.00\n"
+    "S120B,120 end,53.30,-7.10\n"
 )
 
 
@@ -79,6 +95,7 @@ def fake_gtfs(tmp_path: Path) -> Path:
     (d / "trips.txt").write_text(TRIPS_TXT)
     (d / "shapes.txt").write_text(SHAPES_TXT)
     (d / "stop_times.txt").write_text(STOP_TIMES_TXT)
+    (d / "stops.txt").write_text(STOPS_TXT)
     return d
 
 

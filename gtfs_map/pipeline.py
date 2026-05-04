@@ -19,6 +19,7 @@ from .offset import CATEGORY_OFFSET_M, offset_line
 from .services import active_services_for_date
 from .shapes import build_linestrings, representative_shape_ids
 from .smooth import smooth_line
+from .stops import sample_stop_indices, stops_for_active_routes
 
 
 CITY_AGENCIES = {"7778019", "7778021"}
@@ -56,11 +57,22 @@ def _project_itm(geom):
 def _label_features(
     routes_by_category: dict[str, dict[str, list[LineString]]],
     category_by_short: dict[str, str],
+    stops_per_short: dict[str, list[tuple[float, float]]],
+    length_per_short: dict[str, float],
 ) -> list[dict]:
-    """Sample each route's geometry at termini + every ~LABEL_INTERVAL_M
-    metres, then cluster sample points falling in the same ~30 m bucket
-    so a busy intersection shared by N routes shows one combined badge
-    instead of N stacked ones.
+    """Pick label points for each route from its real stop list.
+
+    The first and last stops are always included so a route's
+    advertised termini are guaranteed to carry a badge. In between we
+    pick `K` evenly-spaced stops where K is roughly `length / 3 km`,
+    so long radials get a few mid-route badges and short loops still
+    get ≥2 (start/end). Sample points falling in the same ~33 m
+    bucket across all routes are clustered into one combined badge
+    listing every route serving that stop.
+
+    Falls back to interpolation along the line if a route has no
+    stops resolved (e.g. its representative trip's stop_times rows
+    weren't loaded).
     """
     bucket_grid = 0.0003  # ~33 m at Dublin's latitude
     bucket: dict[tuple[float, float], dict] = {}
@@ -80,18 +92,26 @@ def _label_features(
 
     for cat in CATEGORIES:
         for short, components in routes_by_category.get(cat, {}).items():
-            for line in components:
-                line_itm = _project_itm(line)
-                length_m = line_itm.length
-                if length_m < 50:
-                    # Skip ultra-short residuals — labels would just clutter
-                    continue
-                n_samples = max(2, round(length_m / LABEL_INTERVAL_M) + 1)
-                for i in range(n_samples):
-                    d = length_m * i / (n_samples - 1)
-                    pt_itm = line_itm.interpolate(d)
-                    lon, lat = _TO_WGS.transform(pt_itm.x, pt_itm.y)
+            stops = stops_per_short.get(short, [])
+            total_m = length_per_short.get(short, 0.0)
+            if stops:
+                target_k = max(2, round(total_m / LABEL_INTERVAL_M) + 1)
+                for idx in sample_stop_indices(len(stops), target_k):
+                    lon, lat = stops[idx]
                     _add(lon, lat, short, cat)
+            else:
+                # No stop data — fall back to interpolation along the line.
+                for line in components:
+                    line_itm = _project_itm(line)
+                    length_m = line_itm.length
+                    if length_m < 50:
+                        continue
+                    n_samples = max(2, round(length_m / LABEL_INTERVAL_M) + 1)
+                    for i in range(n_samples):
+                        d = length_m * i / (n_samples - 1)
+                        pt_itm = line_itm.interpolate(d)
+                        lon, lat = _TO_WGS.transform(pt_itm.x, pt_itm.y)
+                        _add(lon, lat, short, cat)
 
     out: list[dict] = []
     for entry in bucket.values():
@@ -114,10 +134,9 @@ def _label_features(
                 },
                 "properties": {
                     "routes": routes,
-                    "label": (
-                        ", ".join(routes[:3])
-                        + (f" +{len(routes) - 3}" if len(routes) > 3 else "")
-                    ),
+                    # Full list, no +N truncation. The viewer wraps
+                    # multiple route names onto multiple lines.
+                    "label": ", ".join(routes),
                     "route_count": len(routes),
                     "category": cat,
                     "colour": category_colour(cat),
@@ -205,6 +224,7 @@ def build(
 
     # Combine inbound + outbound where they're within 30 m of each other.
     routes_by_category: dict[str, dict[str, list[LineString]]] = defaultdict(dict)
+    pre_offset_length_m: dict[str, float] = {}
     category_by_short: dict[str, str] = {}
 
     # Map a route_short_name to whether it's high-frequency by route_id.
@@ -219,6 +239,12 @@ def build(
         secondary = dirs.get(1) if primary is dirs.get(0) else None
         components = combine_directions(
             primary, secondary, threshold_m=DIRECTION_MERGE_THRESHOLD_M
+        )
+        # Record the pre-offset length: parallel_offset on a closed loop
+        # can shrink the geometry dramatically, so label sampling needs
+        # the true line length, not the offset's possibly-truncated one.
+        pre_offset_length_m[short] = sum(
+            _project_itm(c).length for c in components
         )
         # Apply per-category perpendicular offset so a corridor served
         # by routes of different classes shows them as parallel
@@ -272,9 +298,21 @@ def build(
     if not with_labels:
         return segments_geojson, routes_legacy, meta
 
+    # Resolve each route's stop sequence so labels can sit on real
+    # stops (with first and last always present).
+    stops_by_route_id = stops_for_active_routes(gtfs_dir, trips)
+    stops_per_short: dict[str, list[tuple[float, float]]] = {}
+    for rid, coords in stops_by_route_id.items():
+        short = short_by_id.get(rid)
+        if short and coords:
+            stops_per_short[short] = coords
+
     labels = {
         "type": "FeatureCollection",
-        "features": _label_features(routes_by_category, category_by_short),
+        "features": _label_features(
+            routes_by_category, category_by_short, stops_per_short,
+            pre_offset_length_m,
+        ),
     }
     meta["label_feature_count"] = len(labels["features"])
     return segments_geojson, routes_legacy, meta, labels

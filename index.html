@@ -52,12 +52,18 @@
       font-size: 10px;
       font-weight: 600;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      white-space: nowrap;
       box-shadow: 0 1px 1px rgba(0,0,0,0.15);
       transform: translate(-50%, -50%);
       pointer-events: auto;
       cursor: pointer;
       transition: opacity 0.15s, color 0.15s, border-color 0.15s, background 0.15s;
+      max-width: 220px;
+      line-height: 1.25;
+      text-align: center;
+      /* Wrap at category-prefix boundaries so e.g. "13, 16, 33A, 33D"
+         can break onto a second line without truncation. */
+      word-break: break-word;
+      white-space: normal;
     }
 
     /* Applied to badges that don't belong to the currently-selected
@@ -265,7 +271,12 @@
 
       for (const f of segments.features) addLine(f);
 
-      const labelLayer = L.layerGroup();
+      // One label sub-layer per category so toggling a category in
+      // the layer control hides both its lines and its badges in one
+      // shot, and zoom-based show/hide can act per-category.
+      const labelLayersByCategory = {};
+      for (const cat of CATEGORY_ORDER) labelLayersByCategory[cat] = L.layerGroup();
+
       for (const f of labels.features) {
         const p = f.properties;
         const [lon, lat] = f.geometry.coordinates;
@@ -282,32 +293,52 @@
           L.DomEvent.stopPropagation(ev);
           applyHighlight(p.routes);
         });
-        marker.addTo(labelLayer);
-        allLabels.push({ marker, routes: p.routes, category: p.category });
+        const cat = p.category || 'radial';
+        marker.addTo(labelLayersByCategory[cat]);
+        allLabels.push({ marker, routes: p.routes, category: cat });
       }
 
+      // Track which categories the user has currently enabled (lines).
+      const enabledCategories = new Set(CATEGORY_ORDER);
+
       function syncLabels() {
-        if (map.getZoom() >= 12 && !map.hasLayer(labelLayer)) {
-          labelLayer.addTo(map);
-        } else if (map.getZoom() < 12 && map.hasLayer(labelLayer)) {
-          map.removeLayer(labelLayer);
+        const zoomOk = map.getZoom() >= 12;
+        for (const cat of CATEGORY_ORDER) {
+          const ll = labelLayersByCategory[cat];
+          const shouldShow = zoomOk && enabledCategories.has(cat);
+          if (shouldShow && !map.hasLayer(ll)) ll.addTo(map);
+          else if (!shouldShow && map.hasLayer(ll)) map.removeLayer(ll);
         }
       }
       map.on('zoomend', syncLabels);
-      syncLabels();
+      map.on('overlayadd', (e) => { if (e.name && e._cat) { /* set below */ } });
 
       // Add categories in render order: radial first (back), spine last (front).
       for (const cat of CATEGORY_ORDER) groupsByCategory[cat].addTo(map);
+      syncLabels();
 
       // Layer control in legend order: spine top, radial bottom.
       const overlays = {};
+      const overlayLabelToCategory = {};
       for (const cat of LEGEND_ORDER) {
         const colour = meta.category_colours[cat];
         const swatch = `<span style="display:inline-block;width:12px;height:3px;background:${colour};margin-right:6px;vertical-align:middle"></span>`;
         const count = (meta.category_route_counts || {})[cat] || 0;
-        overlays[`${swatch}${CATEGORY_LABELS[cat]} (${count})`] = groupsByCategory[cat];
+        const labelHtml = `${swatch}${CATEGORY_LABELS[cat]} (${count})`;
+        overlays[labelHtml] = groupsByCategory[cat];
+        overlayLabelToCategory[labelHtml] = cat;
       }
       L.control.layers(null, overlays, { collapsed: false, position: 'topright' }).addTo(map);
+
+      // Reflect line-category toggles into label visibility.
+      map.on('overlayadd', (e) => {
+        const cat = overlayLabelToCategory[e.name];
+        if (cat) { enabledCategories.add(cat); syncLabels(); }
+      });
+      map.on('overlayremove', (e) => {
+        const cat = overlayLabelToCategory[e.name];
+        if (cat) { enabledCategories.delete(cat); syncLabels(); }
+      });
 
       const legend = L.control({ position: 'bottomright' });
       legend.onAdd = function () {
