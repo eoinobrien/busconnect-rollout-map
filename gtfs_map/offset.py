@@ -16,10 +16,14 @@ _TO_WGS = pyproj.Transformer.from_crs(_ITM, _WGS84, always_xy=True)
 # visible at typical zoom (12-15).
 CATEGORY_OFFSET_M: dict[str, float] = {
     "spine": 0,
-    "orbital": 4,
-    "local": 8,
-    "peak": 12,
-    "radial": 16,
+    "orbital": 5,
+    "local": 9,
+    "peak": 13,
+    # Radial routes stay at true road position. They're the most
+    # numerous, the most likely to be hidden under spines on shared
+    # corridors anyway, and offsetting them produced visible "line
+    # doesn't reach the stop" issues (e.g. route 99 + Parkgate Street).
+    "radial": 0,
 }
 
 

@@ -11,6 +11,7 @@ from shapely.ops import transform
 
 from shapely.geometry import shape as _shape
 
+from .anchor import anchor_to_stops
 from .bundle import bundle_routes
 from .category import CATEGORY_COLOURS, categorise, category_colour
 from .frequency import high_frequency_route_ids_from_files
@@ -112,20 +113,28 @@ def _label_features(
     stops resolved (e.g. its representative trip's stop_times rows
     weren't loaded).
     """
-    # Stage 1: collect every (lon, lat, short, cat) sample point.
-    samples: list[tuple[float, float, str, str]] = []  # lon, lat, short, cat
+    out: list[dict] = []
 
+    # Cluster within each category INDEPENDENTLY. Mixing categories in
+    # one bubble would mean toggling that category off in the legend
+    # also hides another category's labels — which the user doesn't
+    # want. So a junction served by spines + orbitals + radials
+    # produces three side-by-side badges, one per category.
     for cat in CATEGORIES:
-        for short, components in routes_by_category.get(cat, {}).items():
+        cat_routes = routes_by_category.get(cat, {})
+        if not cat_routes:
+            continue
+
+        cat_samples: list[tuple[float, float, str]] = []  # lon, lat, short
+        for short, components in cat_routes.items():
             stops = stops_per_short.get(short, [])
             total_m = length_per_short.get(short, 0.0)
             if stops:
                 target_k = max(2, round(total_m / LABEL_INTERVAL_M) + 1)
                 for idx in sample_stop_indices(len(stops), target_k):
                     lon, lat = stops[idx]
-                    samples.append((lon, lat, short, cat))
+                    cat_samples.append((lon, lat, short))
             else:
-                # No stop data — fall back to interpolation along the line.
                 for line in components:
                     line_itm = _project_itm(line)
                     length_m = line_itm.length
@@ -136,56 +145,43 @@ def _label_features(
                         d = length_m * i / (n_samples - 1)
                         pt_itm = line_itm.interpolate(d)
                         lon, lat = _TO_WGS.transform(pt_itm.x, pt_itm.y)
-                        samples.append((lon, lat, short, cat))
+                        cat_samples.append((lon, lat, short))
 
-    if not samples:
-        return []
+        if not cat_samples:
+            continue
 
-    # Stage 2: spatial-cluster samples within _LABEL_CLUSTER_M metres
-    # so a busy junction served by 8 routes — even with stops on
-    # opposite sides of a wide road — produces ONE combined badge.
-    points_itm = [_TO_ITM.transform(lon, lat) for lon, lat, _, _ in samples]
-    cluster_ids = _spatial_cluster(points_itm)
+        points_itm = [_TO_ITM.transform(lon, lat) for lon, lat, _ in cat_samples]
+        cluster_ids = _spatial_cluster(points_itm)
 
-    clusters: dict[int, dict] = {}
-    for (lon, lat, short, cat), cid in zip(samples, cluster_ids):
-        entry = clusters.setdefault(
-            cid,
-            {"sum_lon": 0.0, "sum_lat": 0.0, "n": 0, "routes": [], "categories": set()},
-        )
-        entry["sum_lon"] += lon
-        entry["sum_lat"] += lat
-        entry["n"] += 1
-        if short not in entry["routes"]:
-            entry["routes"].append(short)
-            entry["categories"].add(cat)
+        clusters: dict[int, dict] = {}
+        for (lon, lat, short), cid in zip(cat_samples, cluster_ids):
+            entry = clusters.setdefault(
+                cid,
+                {"sum_lon": 0.0, "sum_lat": 0.0, "n": 0, "routes": []},
+            )
+            entry["sum_lon"] += lon
+            entry["sum_lat"] += lat
+            entry["n"] += 1
+            if short not in entry["routes"]:
+                entry["routes"].append(short)
 
-    out: list[dict] = []
-    for entry in clusters.values():
-        cat = next(
-            (c for c in CATEGORIES if c in entry["categories"]),
-            "radial",
-        )
-        routes = sorted(
-            entry["routes"],
-            key=lambda r: (CATEGORIES.index(category_by_short.get(r, "radial")), r),
-        )
-        # Place the badge at the cluster centroid.
-        lon = entry["sum_lon"] / entry["n"]
-        lat = entry["sum_lat"] / entry["n"]
-        out.append(
-            {
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                "properties": {
-                    "routes": routes,
-                    "label": ", ".join(routes),
-                    "route_count": len(routes),
-                    "category": cat,
-                    "colour": category_colour(cat),
-                },
-            }
-        )
+        for entry in clusters.values():
+            routes = sorted(entry["routes"])
+            lon = entry["sum_lon"] / entry["n"]
+            lat = entry["sum_lat"] / entry["n"]
+            out.append(
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                    "properties": {
+                        "routes": routes,
+                        "label": ", ".join(routes),
+                        "route_count": len(routes),
+                        "category": cat,
+                        "colour": category_colour(cat),
+                    },
+                }
+            )
     return out
 
 
@@ -304,25 +300,17 @@ def build(
         offset_m = CATEGORY_OFFSET_M.get(cat, 0)
         if offset_m:
             components = [offset_line(c, offset_m) for c in components]
-
-        # Extend the primary component out to the first and last stops
-        # so the rendered line actually reaches its termini. The offset
-        # otherwise pushes endpoints ~16 m off-position from where the
-        # stop badge sits.
-        stops = stops_per_short_full.get(short, [])
-        if components and stops and len(stops) >= 2:
-            primary_line = components[0]
-            coords = list(primary_line.coords)
-            first_stop = stops[0]
-            last_stop = stops[-1]
-            new_coords: list[tuple[float, float]] = list(coords)
-            if first_stop != coords[0]:
-                new_coords = [first_stop] + new_coords
-            if last_stop != coords[-1]:
-                new_coords = new_coords + [last_stop]
-            if len(new_coords) != len(coords):
-                from shapely.geometry import LineString as _LS
-                components[0] = _LS(new_coords)
+            # Anchor the first/last stop only on offset lines — full
+            # mid-route anchoring caused visible jitter as the line
+            # zig-zagged in to every stop. Termini matter most because
+            # that's where the badge sits prominently.
+            stops = stops_per_short_full.get(short, [])
+            if components and stops and len(stops) >= 2:
+                anchors = [stops[0], stops[-1]]
+                components = [
+                    anchor_to_stops(c, anchors, max_distance_m=offset_m + 8)
+                    for c in components
+                ]
 
         routes_by_category[cat][short] = components
 

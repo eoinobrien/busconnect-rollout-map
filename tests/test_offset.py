@@ -36,28 +36,31 @@ def test_offset_does_not_crash_on_degenerate_input():
     assert out is not None  # no exception, returns something
 
 
-def test_category_offsets_are_in_priority_order():
-    # Spine should not move; each lower category should move more.
+def test_category_offsets_are_assigned_per_category():
+    # Spine and radial both at 0 (radial intentionally at 0 — see
+    # offset.py for why). The middle categories step away from the
+    # centreline so they're visible side-by-side on shared corridors.
     assert CATEGORY_OFFSET_M["spine"] == 0
-    order = ("spine", "orbital", "local", "peak", "radial")
-    distances = [CATEGORY_OFFSET_M[c] for c in order]
-    # Strictly increasing
-    for a, b in zip(distances, distances[1:]):
-        assert b > a, f"{a} should be < {b}"
+    assert CATEGORY_OFFSET_M["radial"] == 0
+    for cat in ("orbital", "local", "peak"):
+        assert CATEGORY_OFFSET_M[cat] > 0
+    # Orbital < local < peak (so the visible offsets don't collide).
+    assert (
+        CATEGORY_OFFSET_M["orbital"]
+        < CATEGORY_OFFSET_M["local"]
+        < CATEGORY_OFFSET_M["peak"]
+    )
 
 
-def test_two_lines_at_different_categories_end_up_visibly_apart():
-    # Two parallel routes on the same road, offset by spine vs radial
-    # should end up apart by spine_distance + radial_distance worth of
-    # metres (or close to it, since one shifts 0 and the other shifts 16).
+def test_two_offset_categories_render_visibly_apart():
+    # Spine sits at 0; peak gets the largest offset of the offset
+    # categories, so it's the cleanest pair to verify.
     line = LineString([(-6.30, 53.30), (-6.20, 53.30)])
     spine_offset = offset_line(line, CATEGORY_OFFSET_M["spine"])
-    radial_offset = offset_line(line, CATEGORY_OFFSET_M["radial"])
-    # Sample mid-points
+    peak_offset = offset_line(line, CATEGORY_OFFSET_M["peak"])
     mid_a = spine_offset.interpolate(0.5, normalized=True)
-    mid_b = radial_offset.interpolate(0.5, normalized=True)
-    # Convert their lat-difference to metres
+    mid_b = peak_offset.interpolate(0.5, normalized=True)
     metres = abs(mid_a.y - mid_b.y) * 111_000
-    assert 8 <= metres <= 24, (
-        f"radial should sit ~16 m from spine, got {metres:.1f} m"
+    assert metres >= CATEGORY_OFFSET_M["peak"] - 5, (
+        f"peak should sit ~{CATEGORY_OFFSET_M['peak']} m from spine, got {metres:.1f} m"
     )
