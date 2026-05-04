@@ -5,11 +5,14 @@ from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
-from shapely.geometry import mapping
+import pyproj
+from shapely.geometry import LineString, mapping
+from shapely.ops import transform
 
 from .bundle import bundle_routes
 from .category import CATEGORY_COLOURS, categorise, category_colour
 from .frequency import high_frequency_route_ids_from_files
+from .merge import combine_directions
 from .services import active_services_for_date
 from .shapes import build_linestrings, representative_shape_ids
 
@@ -22,58 +25,74 @@ AGENCY_LABEL = {
 
 CATEGORIES = ("spine", "orbital", "local", "peak", "radial")
 
-# Frequency threshold for promoting a route to "spine" category (red).
 HIGH_FREQUENCY_THRESHOLD = 5
 HIGH_FREQUENCY_HOUR = 8
 
+# Within this distance the inbound and outbound shapes of a route are
+# treated as the same road and merged into one line.
+DIRECTION_MERGE_THRESHOLD_M = 30.0
+
+# Approximate spacing between mid-route badges (in metres). Termini are
+# always sampled regardless.
+LABEL_INTERVAL_M = 1500.0
+
+
+_TO_ITM = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:2157", always_xy=True)
+_TO_WGS = pyproj.Transformer.from_crs("EPSG:2157", "EPSG:4326", always_xy=True)
+
+
+def _project_itm(geom):
+    return transform(lambda x, y, z=None: _TO_ITM.transform(x, y), geom)
+
 
 def _label_features(
-    rep_shapes: dict[tuple[str, int], str],
-    lines: dict,
-    short_by_id: dict[str, str],
-    long_by_id: dict[str, str],
-    agency_by_id: dict[str, str],
+    routes_by_category: dict[str, dict[str, list[LineString]]],
     category_by_short: dict[str, str],
 ) -> list[dict]:
-    """One label point at each end of each route's representative line.
-
-    Generated *before* bundling so we get a label per route at its own
-    terminus, even where the trunk is shared with other routes.
-    Endpoints landing on the same ~30 m bucket are clustered into one
-    badge that lists all routes terminating there.
+    """Sample each route's geometry at termini + every ~LABEL_INTERVAL_M
+    metres, then cluster sample points falling in the same ~30 m bucket
+    so a busy intersection shared by N routes shows one combined badge
+    instead of N stacked ones.
     """
     bucket_grid = 0.0003  # ~33 m at Dublin's latitude
     bucket: dict[tuple[float, float], dict] = {}
 
-    for (route_id, dir_id), shape_id in rep_shapes.items():
-        line = lines.get(shape_id)
-        if line is None:
-            continue
-        short = short_by_id[route_id]
-        cat = category_by_short.get(short, categorise(short))
-        coords = list(line.coords)
-        for end in (coords[0], coords[-1]):
-            key = (round(end[0] / bucket_grid) * bucket_grid,
-                   round(end[1] / bucket_grid) * bucket_grid)
-            entry = bucket.setdefault(
-                key,
-                {
-                    "lon": end[0],
-                    "lat": end[1],
-                    "routes": [],
-                    "categories": set(),
-                },
-            )
-            if short not in entry["routes"]:
-                entry["routes"].append(short)
-                entry["categories"].add(cat)
+    def _add(lon: float, lat: float, short: str, cat: str) -> None:
+        key = (
+            round(lon / bucket_grid) * bucket_grid,
+            round(lat / bucket_grid) * bucket_grid,
+        )
+        entry = bucket.setdefault(
+            key,
+            {"lon": lon, "lat": lat, "routes": [], "categories": set()},
+        )
+        if short not in entry["routes"]:
+            entry["routes"].append(short)
+            entry["categories"].add(cat)
+
+    for cat in CATEGORIES:
+        for short, components in routes_by_category.get(cat, {}).items():
+            for line in components:
+                line_itm = _project_itm(line)
+                length_m = line_itm.length
+                if length_m < 50:
+                    # Skip ultra-short residuals — labels would just clutter
+                    continue
+                n_samples = max(2, round(length_m / LABEL_INTERVAL_M) + 1)
+                for i in range(n_samples):
+                    d = length_m * i / (n_samples - 1)
+                    pt_itm = line_itm.interpolate(d)
+                    lon, lat = _TO_WGS.transform(pt_itm.x, pt_itm.y)
+                    _add(lon, lat, short, cat)
 
     out: list[dict] = []
     for entry in bucket.values():
-        # Pick the most "important" category present at this terminus
-        # (spine > orbital > local > peak > radial) for the badge colour.
-        cat = next((c for c in CATEGORIES if c in entry["categories"]), "radial")
-        # Sort routes so spines first, then alphanumeric
+        # Pick the most "important" category present here for the badge colour.
+        cat = next(
+            (c for c in CATEGORIES if c in entry["categories"]),
+            "radial",
+        )
+        # Sort: spines first, then alphanumeric.
         routes = sorted(
             entry["routes"],
             key=lambda r: (CATEGORIES.index(category_by_short.get(r, "radial")), r),
@@ -87,7 +106,6 @@ def _label_features(
                 },
                 "properties": {
                     "routes": routes,
-                    # Show first 3 routes joined; if more, append "+N".
                     "label": (
                         ", ".join(routes[:3])
                         + (f" +{len(routes) - 3}" if len(routes) > 3 else "")
@@ -140,7 +158,6 @@ def build(
         & trips["service_id"].isin(active_services)
     ]
 
-    # High-frequency promotion: routes with >=5 trip-starts at peak hour.
     active_trip_ids = set(trips["trip_id"])
     if (gtfs_dir / "stop_times.txt").exists() and active_trip_ids:
         hf_route_ids = high_frequency_route_ids_from_files(
@@ -168,28 +185,39 @@ def build(
     shapes_df = shapes_df[shapes_df["shape_id"].isin(needed_shape_ids)]
     lines = build_linestrings(shapes_df)
 
-    # Collect one representative line per (route_short_name) per category,
-    # preferring direction 0. Bundling operates on route names so the
-    # left/right direction lines of the same route don't get treated as
-    # two separate routes.
-    per_category: dict[str, dict[str, object]] = defaultdict(dict)
-    category_by_short: dict[str, str] = {}
-
+    # Group rep shapes by route_short_name + direction.
+    shapes_by_route: dict[str, dict[int, LineString]] = defaultdict(dict)
     for (route_id, dir_id), shape_id in rep_shapes.items():
         line = lines.get(shape_id)
         if line is None:
             continue
         short = short_by_id[route_id]
-        cat = categorise(short, high_frequency=route_id in hf_route_ids)
+        shapes_by_route[short][dir_id] = line
+        # Side-effect: cache mapping for HF / agency lookups.
+
+    # Combine inbound + outbound where they're within 30 m of each other.
+    routes_by_category: dict[str, dict[str, list[LineString]]] = defaultdict(dict)
+    category_by_short: dict[str, str] = {}
+
+    # Map a route_short_name to whether it's high-frequency by route_id.
+    hf_shorts: set[str] = {
+        short_by_id[rid] for rid in hf_route_ids if rid in short_by_id
+    }
+
+    for short, dirs in shapes_by_route.items():
+        cat = categorise(short, high_frequency=short in hf_shorts)
         category_by_short[short] = cat
-        existing = per_category[cat].get(short)
-        if existing is None or dir_id == 0:
-            per_category[cat][short] = line
+        primary = dirs.get(0) or dirs.get(1)
+        secondary = dirs.get(1) if primary is dirs.get(0) else None
+        components = combine_directions(
+            primary, secondary, threshold_m=DIRECTION_MERGE_THRESHOLD_M
+        )
+        routes_by_category[cat][short] = components
 
     # Bundle each category and emit a single Feature collection.
     all_segments: list[dict] = []
     for cat in CATEGORIES:
-        routes_in_cat = per_category.get(cat, {})
+        routes_in_cat = routes_by_category.get(cat, {})
         if not routes_in_cat:
             continue
         feats = bundle_routes(routes_in_cat)
@@ -200,8 +228,6 @@ def build(
         all_segments.extend(feats)
 
     segments_geojson = {"type": "FeatureCollection", "features": all_segments}
-    # Keep the legacy `routes` slot empty: the viewer reads from
-    # segments_geojson now. Returned as an empty FC for compat.
     routes_legacy = {"type": "FeatureCollection", "features": []}
 
     meta = {
@@ -213,11 +239,13 @@ def build(
         "active_services": sorted(active_services),
         "high_frequency_threshold": HIGH_FREQUENCY_THRESHOLD,
         "high_frequency_hour": HIGH_FREQUENCY_HOUR,
-        "high_frequency_route_count": len(hf_route_ids),
+        "high_frequency_route_count": len(hf_shorts),
         "category_route_counts": {
-            cat: len(per_category.get(cat, {})) for cat in CATEGORIES
+            cat: len(routes_by_category.get(cat, {})) for cat in CATEGORIES
         },
         "segment_feature_count": len(all_segments),
+        "direction_merge_threshold_m": DIRECTION_MERGE_THRESHOLD_M,
+        "label_interval_m": LABEL_INTERVAL_M,
     }
 
     if not with_labels:
@@ -225,10 +253,7 @@ def build(
 
     labels = {
         "type": "FeatureCollection",
-        "features": _label_features(
-            rep_shapes, lines, short_by_id, long_by_id, agency_by_id,
-            category_by_short,
-        ),
+        "features": _label_features(routes_by_category, category_by_short),
     }
     meta["label_feature_count"] = len(labels["features"])
     return segments_geojson, routes_legacy, meta, labels

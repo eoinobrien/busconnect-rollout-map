@@ -31,20 +31,33 @@ def _quantize(x: float, y: float) -> tuple[float, float]:
 
 
 def _edges_with_routes(
-    sub_routes: dict[str, LineString],
+    sub_routes: dict[str, object],
 ) -> dict[frozenset, set[str]]:
     """Walk every line, return a mapping from quantized undirected edge
     (frozenset of two grid-snapped points) to the set of sub-route ids
-    that use it."""
+    that use it.
+
+    Each value in `sub_routes` may be a LineString, a MultiLineString,
+    or an iterable of LineStrings (e.g. the output of merge.combine_
+    directions). All components are attributed to the same sub-route
+    id.
+    """
     edges: dict[frozenset, set[str]] = defaultdict(set)
-    for sub_id, line in sub_routes.items():
-        projected = _project(line, _TO_ITM)
-        densified = shapely.segmentize(projected, max_segment_length=_DENSIFY_M)
-        pts = [_quantize(x, y) for x, y in densified.coords]
-        for a, b in zip(pts, pts[1:]):
-            if a == b:
-                continue
-            edges[frozenset((a, b))].add(sub_id)
+    for sub_id, geom in sub_routes.items():
+        if isinstance(geom, LineString):
+            components = [geom]
+        elif isinstance(geom, MultiLineString):
+            components = list(geom.geoms)
+        else:
+            components = [g for g in geom if isinstance(g, LineString)]
+        for line in components:
+            projected = _project(line, _TO_ITM)
+            densified = shapely.segmentize(projected, max_segment_length=_DENSIFY_M)
+            pts = [_quantize(x, y) for x, y in densified.coords]
+            for a, b in zip(pts, pts[1:]):
+                if a == b:
+                    continue
+                edges[frozenset((a, b))].add(sub_id)
     return edges
 
 
