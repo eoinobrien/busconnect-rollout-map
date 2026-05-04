@@ -61,99 +61,91 @@ def _edges_with_routes_loose(
     sub_routes: dict[str, object],
     tolerance_m: float,
 ) -> dict[frozenset, set[str]]:
-    """Loose bundling via spatial clustering: any two densified points
-    within `tolerance_m` of each other end up at the same canonical
-    centroid before edges are built. Catches routes that share a road
-    but with shapes sampled differently (different lanes, different
-    sampling rates) — a 2 m grid would treat them as separate."""
+    """Loose bundling via primary-line snapping.
+
+    Sorts routes by length, longest first. The longest route's
+    geometry becomes the seed canonical. Each subsequent route's
+    densified points are perpendicular-projected onto the closest
+    canonical segment within tolerance_m; points further out keep
+    their original position and become NEW canonical segments for
+    later routes to snap to.
+
+    This is option B from the design discussion: the bundled trunk
+    inherits one route's clean line rather than a wobbly centroid
+    averaged across pairings, eliminating the cluster-centroid
+    jitter that the union-find approach exhibited.
+    """
+    from shapely.geometry import LineString as _LS
     from shapely.geometry import Point
     from shapely.strtree import STRtree
 
-    # Step 1: project every component, densify, store points alongside
-    # the sub_id that produced them. Track which sub_routes each unique
-    # point belongs to so the cluster step can avoid merging points
-    # from the SAME route (which would collapse a long straight line
-    # of densified points into one cluster).
-    per_route_points: list[tuple[str, list[tuple[float, float]]]] = []
-    unique_pts: list[tuple[float, float]] = []
-    pt_index: dict[tuple[float, float], int] = {}
-    pt_route_sets: list[set[str]] = []
-
+    # Pre-project + sort routes by total length, longest first.
+    routes_with_lines: list[tuple[str, list[LineString], float]] = []
     for sub_id, geom in sub_routes.items():
+        components_proj: list[LineString] = []
+        total_len = 0.0
         for line in _components(geom):
-            projected = _project(line, _TO_ITM)
-            densified = shapely.segmentize(projected, max_segment_length=_DENSIFY_M)
-            line_pts = [_quantize(x, y) for x, y in densified.coords]
-            per_route_points.append((sub_id, line_pts))
-            for p in line_pts:
-                idx = pt_index.get(p)
-                if idx is None:
-                    pt_index[p] = len(unique_pts)
-                    unique_pts.append(p)
-                    pt_route_sets.append({sub_id})
+            proj = _project(line, _TO_ITM)
+            components_proj.append(proj)
+            total_len += proj.length
+        if components_proj:
+            routes_with_lines.append((sub_id, components_proj, total_len))
+    routes_with_lines.sort(key=lambda kv: -kv[2])
+
+    canonical_lines: list[LineString] = []
+    per_route_snapped: list[tuple[str, list[tuple[float, float]]]] = []
+
+    for sub_id, components_proj, _length in routes_with_lines:
+        # Snapshot the canonical at start of this route so all of its
+        # snapping decisions are made against a stable reference.
+        tree = STRtree(canonical_lines) if canonical_lines else None
+        new_segments: list[LineString] = []
+
+        for line_proj in components_proj:
+            densified = shapely.segmentize(line_proj, max_segment_length=_DENSIFY_M)
+            snapped_pts: list[tuple[float, float]] = []
+            current_new: list[tuple[float, float]] = []
+
+            for c in densified.coords:
+                pt = Point(c)
+                snapped = None
+                if tree is not None:
+                    best_dist = tolerance_m
+                    for cl_idx in tree.query(pt.buffer(tolerance_m)):
+                        cl = canonical_lines[cl_idx]
+                        proj_d = cl.project(pt)
+                        proj_pt = cl.interpolate(proj_d)
+                        dist = pt.distance(proj_pt)
+                        if dist < best_dist:
+                            best_dist = dist
+                            snapped = (proj_pt.x, proj_pt.y)
+
+                if snapped is None:
+                    snapped_pts.append((c[0], c[1]))
+                    current_new.append((c[0], c[1]))
                 else:
-                    pt_route_sets[idx].add(sub_id)
+                    snapped_pts.append(snapped)
+                    if len(current_new) >= 2:
+                        new_segments.append(_LS(current_new))
+                    current_new = []
 
-    if not unique_pts:
-        return {}
+            if len(current_new) >= 2:
+                new_segments.append(_LS(current_new))
 
-    # Step 2: union-find spatial cluster within tolerance_m. The key
-    # constraint: two clusters only merge if their CURRENT route sets
-    # are disjoint. Otherwise a chain of unions A0-B0-A1-B1... would
-    # collapse every point on a long parallel pair into one mega-
-    # cluster (because each individual union "looks" disjoint at the
-    # point level even when the growing cluster already contains both
-    # routes).
-    point_geoms = [Point(p) for p in unique_pts]
-    tree = STRtree(point_geoms)
-    parent = list(range(len(unique_pts)))
-    cluster_routes: dict[int, set[str]] = {
-        i: set(pt_route_sets[i]) for i in range(len(unique_pts))
-    }
+            per_route_snapped.append((sub_id, snapped_pts))
 
-    def find(x: int) -> int:
-        while parent[x] != x:
-            parent[x] = parent[parent[x]]
-            x = parent[x]
-        return x
+        # Subsequent routes can also snap to this route's divergent
+        # stretches (its un-snapped runs).
+        canonical_lines.extend(new_segments)
 
-    def try_union(a: int, b: int) -> None:
-        ra, rb = find(a), find(b)
-        if ra == rb:
-            return
-        if not cluster_routes[ra].isdisjoint(cluster_routes[rb]):
-            return  # merging would put two same-route points in one cluster
-        parent[ra] = rb
-        cluster_routes[rb] |= cluster_routes[ra]
-        del cluster_routes[ra]
-
-    for i, g in enumerate(point_geoms):
-        for j in tree.query(g.buffer(tolerance_m)):
-            if j == i:
-                continue
-            if g.distance(point_geoms[j]) <= tolerance_m:
-                try_union(i, j)
-
-    # Step 3: canonical position per cluster — the centroid keeps the
-    # bundled line near the average of the input shapes rather than
-    # snapping to any one route's geometry.
-    cluster_members: dict[int, list[int]] = defaultdict(list)
-    for i in range(len(unique_pts)):
-        cluster_members[find(i)].append(i)
-    canonical: dict[tuple[float, float], tuple[float, float]] = {}
-    for root, members in cluster_members.items():
-        cx = sum(unique_pts[i][0] for i in members) / len(members)
-        cy = sum(unique_pts[i][1] for i in members) / len(members)
-        for i in members:
-            canonical[unique_pts[i]] = (cx, cy)
-
-    # Step 4: build edges using canonical positions.
+    # Build edges from snapped (then quantized) point sequences. The
+    # snapping itself produces clean geometry; the 2 m quantize is
+    # there only so identical positions hash the same in the edge keys.
     edges: dict[frozenset, set[str]] = defaultdict(set)
-    for sub_id, pts in per_route_points:
-        snapped = [canonical[p] for p in pts]
-        # Drop consecutive duplicates introduced by clustering.
+    for sub_id, pts in per_route_snapped:
+        pts_q = [_quantize(x, y) for x, y in pts]
         cleaned: list[tuple[float, float]] = []
-        for p in snapped:
+        for p in pts_q:
             if not cleaned or cleaned[-1] != p:
                 cleaned.append(p)
         for a, b in zip(cleaned, cleaned[1:]):
