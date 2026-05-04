@@ -21,6 +21,50 @@
       box-shadow: 0 1px 4px rgba(0,0,0,0.2);
       font-size: 12px;
       line-height: 1.55;
+      max-width: 260px;
+    }
+    .phase-control {
+      background: rgba(255,255,255,0.95);
+      padding: 10px 12px;
+      border-radius: 4px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+      font-size: 12px;
+      line-height: 1.4;
+      max-width: 260px;
+    }
+    .phase-control h4 {
+      margin: 0 0 6px 0;
+      font-size: 13px;
+    }
+    .phase-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 3px 6px;
+      cursor: pointer;
+      border-radius: 3px;
+    }
+    .phase-row:hover {
+      background: #f0f0f0;
+    }
+    .phase-row.active {
+      background: #fff7d6;
+      border-left: 3px solid #f5b800;
+      padding-left: 3px;
+    }
+    .phase-id {
+      font-weight: 600;
+      min-width: 24px;
+      display: inline-block;
+    }
+    .phase-date {
+      color: #666;
+      font-size: 11px;
+    }
+    .phase-count {
+      color: #888;
+      font-size: 11px;
     }
     .legend h4 { margin: 0 0 6px 0; font-size: 13px; }
     .legend .swatch {
@@ -425,6 +469,63 @@
         return div;
       };
       legend.addTo(map);
+
+      // Phase filter — click a phase to highlight every route launched
+      // in that BusConnects rollout phase. "Legacy" highlights everything
+      // not in any phase (i.e. pre-BusConnects routes).
+      const phasesMeta = meta.rollout_phases || {};
+      const routePhase = meta.route_phase || {};
+      const phaseRouteCounts = meta.phase_route_counts || {};
+      const phaseIds = Object.keys(phasesMeta).sort();
+
+      function routesInPhase(phaseId) {
+        const out = [];
+        for (const [r, p] of Object.entries(routePhase)) {
+          if (p === phaseId) out.push(r);
+        }
+        return out;
+      }
+
+      if (phaseIds.length || phaseRouteCounts.legacy) {
+        const phaseControl = L.control({ position: 'topleft' });
+        phaseControl.onAdd = function () {
+          const div = L.DomUtil.create('div', 'phase-control');
+          L.DomEvent.disableClickPropagation(div);
+          L.DomEvent.disableScrollPropagation(div);
+          let html = '<h4>BusConnects phase</h4>';
+          html += `<div class="phase-row" data-phase=""><span><span class="phase-id">All</span></span><span class="phase-count">${meta.route_count}</span></div>`;
+          for (const pid of phaseIds) {
+            const info = phasesMeta[pid];
+            const cnt = phaseRouteCounts[pid] || 0;
+            html += `<div class="phase-row" data-phase="${pid}">
+              <span><span class="phase-id">${pid}</span><span class="phase-date">&nbsp;${info.date}</span></span>
+              <span class="phase-count">${cnt}</span>
+            </div>`;
+          }
+          const legacyCount = phaseRouteCounts.legacy || 0;
+          if (legacyCount) {
+            html += `<div class="phase-row" data-phase="legacy">
+              <span><span class="phase-id">Legacy</span><span class="phase-date">&nbsp;pre-BusConnects</span></span>
+              <span class="phase-count">${legacyCount}</span>
+            </div>`;
+          }
+          div.innerHTML = html;
+          div.querySelectorAll('.phase-row').forEach(row => {
+            row.addEventListener('click', () => {
+              const pid = row.getAttribute('data-phase');
+              div.querySelectorAll('.phase-row').forEach(r => r.classList.remove('active'));
+              if (!pid) {
+                clearHighlight();
+                return;
+              }
+              row.classList.add('active');
+              applyHighlight(routesInPhase(pid));
+            });
+          });
+          return div;
+        };
+        phaseControl.addTo(map);
+      }
 
       map.on('click', () => { if (selectedRoutes) clearHighlight(); });
     }).catch(err => {

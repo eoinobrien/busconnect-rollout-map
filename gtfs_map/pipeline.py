@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime as _dt
+import json as _json
 from collections import defaultdict
 from pathlib import Path
 
@@ -26,6 +27,24 @@ from .stops import sample_stop_indices, stops_for_active_routes
 
 
 CITY_AGENCIES = {"7778019", "7778021"}
+
+LEGACY_PHASE = "legacy"
+
+
+def _load_rollout_phases(path: Path) -> tuple[dict, dict[str, str]]:
+    """Read rollout-phases.json. Returns (phases_meta, short_to_phase).
+
+    phases_meta:    {phase_id: {"date": iso, "routes": [...]}, ...}
+    short_to_phase: {route_short_name: phase_id}
+    """
+    if not path.exists():
+        return {}, {}
+    raw = _json.loads(path.read_text())
+    short_to_phase: dict[str, str] = {}
+    for phase_id, info in raw.items():
+        for short in info.get("routes", []):
+            short_to_phase[short] = phase_id
+    return raw, short_to_phase
 AGENCY_LABEL = {
     "7778019": "Dublin Bus",
     "7778021": "Go-Ahead",
@@ -54,11 +73,11 @@ SMOOTH_TOLERANCE_M = 4.0
 # corridor even when their GTFS shape points don't coincide exactly.
 # Set to 0 to fall back to tight (2 m grid) bundling for that category.
 CROSS_ROUTE_TOLERANCE_M: dict[str, float] = {
-    "spine": 18.0,
-    "orbital": 18.0,
-    "local": 18.0,
-    "peak": 18.0,
-    "radial": 18.0,
+    "spine": 25.0,
+    "orbital": 25.0,
+    "local": 25.0,
+    "peak": 25.0,
+    "radial": 25.0,
 }
 
 
@@ -113,6 +132,7 @@ def _label_features(
     category_by_short: dict[str, str],
     stops_per_short: dict[str, list[tuple[float, float]]],
     length_per_short: dict[str, float],
+    short_to_phase: dict[str, str],
 ) -> list[dict]:
     """Pick label points for each route from its real stop list.
 
@@ -192,6 +212,9 @@ def _label_features(
             routes = sorted(entry["routes"])
             lon = entry["sum_lon"] / entry["n"]
             lat = entry["sum_lat"] / entry["n"]
+            phases = sorted({
+                short_to_phase.get(r, LEGACY_PHASE) for r in routes
+            })
             out.append(
                 {
                     "type": "Feature",
@@ -202,6 +225,7 @@ def _label_features(
                         "route_count": len(routes),
                         "category": cat,
                         "colour": category_colour(cat),
+                        "phases": phases,
                     },
                 }
             )
@@ -209,7 +233,10 @@ def _label_features(
 
 
 def build(
-    gtfs_dir: Path, date_iso: str, with_labels: bool = False
+    gtfs_dir: Path,
+    date_iso: str,
+    with_labels: bool = False,
+    rollout_phases_path: Path | None = None,
 ):
     """Run the full GTFS -> GeoJSON pipeline.
 
@@ -218,6 +245,15 @@ def build(
       with_labels=True:             (segments, _, meta, labels)
     """
     gtfs_dir = Path(gtfs_dir)
+
+    if rollout_phases_path is None:
+        # Best-effort: look for it next to gtfs/ or in the parent dir.
+        candidate = gtfs_dir.parent / "rollout-phases.json"
+        if candidate.exists():
+            rollout_phases_path = candidate
+    phases_meta, short_to_phase = _load_rollout_phases(
+        rollout_phases_path or Path("/dev/null/missing")
+    )
 
     with open(gtfs_dir / "calendar.txt") as cal, open(
         gtfs_dir / "calendar_dates.txt"
@@ -357,10 +393,27 @@ def build(
             }
             f["properties"]["category"] = cat
             f["properties"]["colour"] = colour
+            # Attach the BusConnects rollout phase for any route on
+            # this segment. A segment with mixed phases lists every
+            # phase touching it; "legacy" goes in if any route on the
+            # segment isn't in the rollout map.
+            phases = sorted({
+                short_to_phase.get(r, LEGACY_PHASE)
+                for r in f["properties"]["route_set"]
+            })
+            f["properties"]["phases"] = phases
         all_segments.extend(feats)
 
     segments_geojson = {"type": "FeatureCollection", "features": all_segments}
     routes_legacy = {"type": "FeatureCollection", "features": []}
+
+    # Phase route counts (only of routes actually rendered today).
+    rendered_shorts = {
+        s for cat in CATEGORIES for s in routes_by_category.get(cat, {})
+    }
+    phase_route_counts: dict[str, int] = defaultdict(int)
+    for s in rendered_shorts:
+        phase_route_counts[short_to_phase.get(s, LEGACY_PHASE)] += 1
 
     meta = {
         "build_iso": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
@@ -378,6 +431,11 @@ def build(
         "segment_feature_count": len(all_segments),
         "direction_merge_threshold_m": DIRECTION_MERGE_THRESHOLD_M,
         "label_interval_m": LABEL_INTERVAL_M,
+        # Rollout-phase metadata: phases dict + per-route-short mapping
+        # so the viewer can drive a phase-highlight filter.
+        "rollout_phases": phases_meta,
+        "route_phase": {s: short_to_phase.get(s, LEGACY_PHASE) for s in rendered_shorts},
+        "phase_route_counts": dict(phase_route_counts),
     }
 
     if not with_labels:
@@ -390,7 +448,7 @@ def build(
         "type": "FeatureCollection",
         "features": _label_features(
             routes_by_category, category_by_short, stops_per_short,
-            pre_offset_length_m,
+            pre_offset_length_m, short_to_phase,
         ),
     }
     meta["label_feature_count"] = len(labels["features"])
