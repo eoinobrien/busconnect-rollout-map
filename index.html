@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Dublin city bus network</title>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <style>
+    html, body, #map { height: 100%; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+
+    .legend {
+      background: rgba(255,255,255,0.95);
+      padding: 10px 12px;
+      border-radius: 4px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.2);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+    .legend h4 { margin: 0 0 6px 0; font-size: 13px; }
+    .legend .swatch {
+      display: inline-block;
+      width: 14px; height: 4px;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    .legend .row { white-space: nowrap; }
+    .legend .meta {
+      margin-top: 8px;
+      padding-top: 6px;
+      border-top: 1px solid #ddd;
+      font-size: 11px;
+      color: #555;
+    }
+
+    .leaflet-tooltip.route-tooltip {
+      font-size: 12px;
+      padding: 4px 8px;
+    }
+
+    .error-banner {
+      position: absolute;
+      top: 10px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 1000;
+      background: #c0392b;
+      color: white;
+      padding: 8px 14px;
+      border-radius: 4px;
+      font-size: 13px;
+      max-width: 90vw;
+    }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+  <script>
+    const map = L.map('map', { preferCanvas: true }).setView([53.345, -6.26], 11);
+
+    L.tileLayer(
+      'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
+      {
+        attribution:
+          '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a> &middot; Data: <a href="https://www.transportforireland.ie/">Transport for Ireland</a> GTFS',
+        subdomains: 'abcd',
+        maxZoom: 19,
+      }
+    ).addTo(map);
+
+    function showError(msg) {
+      const div = document.createElement('div');
+      div.className = 'error-banner';
+      div.textContent = msg;
+      document.body.appendChild(div);
+    }
+
+    function spineStyle(feature) {
+      const p = feature.properties;
+      return {
+        color: p.colour,
+        weight: p.kind === 'trunk' ? 5 : 2.5,
+        opacity: p.kind === 'trunk' ? 0.9 : 0.75,
+        lineCap: 'round',
+        lineJoin: 'round',
+      };
+    }
+
+    function spineTooltip(feature) {
+      const p = feature.properties;
+      const set = p.route_set.join(', ');
+      const label = p.kind === 'trunk' ? 'Trunk' : 'Branch';
+      return `<b>${p.spine}-spine ${label}</b><br>${set}`;
+    }
+
+    function routeStyle(feature) {
+      return {
+        color: feature.properties.colour,
+        weight: 2,
+        opacity: 0.7,
+        lineCap: 'round',
+        lineJoin: 'round',
+      };
+    }
+
+    function routeTooltip(feature) {
+      const p = feature.properties;
+      return `<b>${p.route_short_name}</b><br>${p.route_long_name}<br><i>${p.agency}</i>`;
+    }
+
+    function bindTooltips(layer, getter) {
+      layer.eachLayer(l => l.bindTooltip(getter(l.feature), { className: 'route-tooltip', sticky: true }));
+    }
+
+    Promise.all([
+      fetch('output/spines.geojson').then(r => r.json()),
+      fetch('output/routes.geojson').then(r => r.json()),
+      fetch('output/meta.json').then(r => r.json()),
+    ]).then(([spines, routes, meta]) => {
+      // Group spine features by spine letter so each gets its own toggleable layer.
+      const spineLayersByLetter = {};
+      for (const f of spines.features) {
+        const letter = f.properties.spine;
+        if (!spineLayersByLetter[letter]) spineLayersByLetter[letter] = [];
+        spineLayersByLetter[letter].push(f);
+      }
+
+      const overlays = {};
+      for (const letter of Object.keys(spineLayersByLetter).sort()) {
+        const layer = L.geoJSON(
+          { type: 'FeatureCollection', features: spineLayersByLetter[letter] },
+          { style: spineStyle }
+        );
+        bindTooltips(layer, l => spineTooltip(l));
+        layer.addTo(map);
+        const colour = meta.spine_colours[letter];
+        overlays[`<span style="display:inline-block;width:10px;height:3px;background:${colour};margin-right:5px;vertical-align:middle"></span>${letter}-spine`] = layer;
+      }
+
+      const otherLayer = L.geoJSON(routes, { style: routeStyle });
+      bindTooltips(otherLayer, l => routeTooltip(l));
+      otherLayer.addTo(map);
+      overlays['Other routes'] = otherLayer;
+
+      L.control.layers(null, overlays, { collapsed: false }).addTo(map);
+
+      // Build legend
+      const legend = L.control({ position: 'bottomright' });
+      legend.onAdd = function () {
+        const div = L.DomUtil.create('div', 'legend');
+        let html = '<h4>BusConnects spines</h4>';
+        for (const letter of Object.keys(spineLayersByLetter).sort()) {
+          const c = meta.spine_colours[letter];
+          html += `<div class="row"><span class="swatch" style="background:${c}"></span>${letter}-spine</div>`;
+        }
+        html += `<div class="meta">Network of ${meta.reference_date}<br>${meta.route_count} routes &middot; ${meta.spine_feature_count + meta.other_feature_count} features<br>Built ${meta.build_iso}</div>`;
+        div.innerHTML = html;
+        return div;
+      };
+      legend.addTo(map);
+    }).catch(err => {
+      console.error(err);
+      showError(
+        'Could not load output GeoJSON. Run "python build.py" then serve via "python -m http.server" and reload.'
+      );
+    });
+  </script>
+</body>
+</html>
