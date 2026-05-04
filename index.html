@@ -135,6 +135,17 @@
     const CATEGORY_ORDER = ['radial', 'peak', 'local', 'orbital', 'spine'];
     const LEGEND_ORDER = ['spine', 'orbital', 'local', 'peak', 'radial'];
 
+    // Per-category screen-pixel offset for label badges, so a junction
+    // served by 5 categories doesn't stack 5 badges in one spot. Lays
+    // them out around the junction in a fixed pattern.
+    const CATEGORY_BADGE_OFFSET = {
+      spine:   [0,    0],
+      orbital: [0,   -24],
+      local:   [-28, 16],
+      peak:    [28,  16],
+      radial:  [0,   28],
+    };
+
     const map = L.map('map', { preferCanvas: true }).setView([53.345, -6.26], 11);
     const lineRenderer = L.canvas({ padding: 0.4 });
 
@@ -305,12 +316,16 @@
         ));
         const height = lines * lineHeight + verticalPadding;
         const html = `<div class="route-badge" style="--c:${p.colour}" title="${p.routes.join(', ')}">${p.label}</div>`;
+        const [dx, dy] = CATEGORY_BADGE_OFFSET[p.category] || [0, 0];
         const marker = L.marker([lat, lon], {
           icon: L.divIcon({
             html,
             className: 'route-badge-wrapper',
             iconSize: [width, height],
-            iconAnchor: [width / 2, height / 2],
+            // iconAnchor is the pixel inside the icon that maps to the
+            // lat/lon. Shifting it shifts the rendered icon in the
+            // opposite direction, giving us a per-category nudge.
+            iconAnchor: [width / 2 - dx, height / 2 - dy],
           }),
           interactive: true,
         });
