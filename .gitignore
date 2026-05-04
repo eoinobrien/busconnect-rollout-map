@@ -1,0 +1,8 @@
+data/
+output/*.geojson
+output/*.json
+__pycache__/
+*.pyc
+.venv/
+.idea/
+.vscode/
