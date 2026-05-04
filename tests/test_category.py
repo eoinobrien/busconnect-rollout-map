@@ -71,15 +71,28 @@ def test_category_colours_dict_matches_function():
         assert category_colour(cat) == CATEGORY_COLOURS[cat]
 
 
-def test_high_frequency_flag_promotes_any_route_to_spine():
+def test_high_frequency_flag_promotes_only_plain_radials_to_spine():
     # A plain numeric route normally lands in radial; with the
     # high_frequency flag set it should be drawn red as a spine.
     assert categorise("13") == "radial"
     assert categorise("13", high_frequency=True) == "spine"
-    # Locals/orbitals/peak likewise upgrade to spine when high-freq.
-    assert categorise("L25", high_frequency=True) == "spine"
-    assert categorise("N4", high_frequency=True) == "spine"
-    assert categorise("X1", high_frequency=True) == "spine"
+    assert categorise("46A", high_frequency=True) == "spine"
+
+
+def test_orbital_routes_stay_blue_irrespective_of_frequency():
+    # User's rule: W/N/S routes always render blue regardless of how
+    # often they run.
+    for name in ("W2", "W4", "W6", "N2", "N4", "N6", "S2", "S4", "S6", "S8"):
+        assert categorise(name, high_frequency=False) == "orbital"
+        assert categorise(name, high_frequency=True) == "orbital"
+
+
+def test_local_peak_keep_their_category_when_high_frequency():
+    # Locals and peak routes also retain their nature regardless of
+    # frequency — only plain-numeric radials get promoted.
+    assert categorise("L25", high_frequency=True) == "local"
+    assert categorise("X1", high_frequency=True) == "peak"
+    assert categorise("P29", high_frequency=True) == "peak"
 
 
 def test_lettered_spines_stay_spine_regardless_of_frequency_flag():

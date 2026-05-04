@@ -22,17 +22,21 @@ CATEGORY_COLOURS: dict[str, str] = {
 
 
 def categorise(route_short_name: str, *, high_frequency: bool = False) -> str:
-    """Return the high-level category of a route by short-name prefix.
+    """Return the high-level category of a route.
 
-    spine    — A-H followed by digits only (BusConnects spine sub-routes)
-               OR any route promoted via high_frequency=True (>=5 trips
-               per hour at peak — drawn red on the map alongside spines)
-    orbital  — W*, N*, S* (orbitals/cross-town)
-    local    — L*
-    peak     — P*, X* (peak-only / express)
-    radial   — everything else (typically plain numeric radial routes)
+    Category by nature (route-name prefix) — these never change with
+    frequency, because they encode the route's *type* (orbital,
+    local, peak/express) rather than how often it runs:
+      spine    A-H followed by digits only (BusConnects spine letters)
+      orbital  W*, N*, S*  (cross-town, always blue)
+      local    L*          (neighbourhood feeders, always green)
+      peak     P*, X*      (peak-only / express, always orange)
+
+    Plain-numeric radials are the only category that can be promoted
+    to spine (red) via the high_frequency flag — that's the rule that
+    makes a 13 or a 16 paint red because it runs >=5 times an hour.
     """
-    if high_frequency or _SPINE_RE.match(route_short_name):
+    if _SPINE_RE.match(route_short_name):
         return "spine"
     first = route_short_name[:1]
     if first == "L":
@@ -41,6 +45,8 @@ def categorise(route_short_name: str, *, high_frequency: bool = False) -> str:
         return "orbital"
     if first in ("P", "X"):
         return "peak"
+    if high_frequency:
+        return "spine"
     return "radial"
 
 
