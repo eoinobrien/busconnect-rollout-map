@@ -11,6 +11,8 @@ from shapely.ops import transform
 
 from shapely.geometry import shape as _shape
 
+from shapely.geometry import Point as _Point
+
 from .anchor import anchor_to_stops
 from .bundle import bundle_routes
 from .category import CATEGORY_COLOURS, categorise, category_colour
@@ -129,10 +131,18 @@ def _label_features(
         for short, components in cat_routes.items():
             stops = stops_per_short.get(short, [])
             total_m = length_per_short.get(short, 0.0)
-            if stops:
+            # Project each stop onto the route's already-offset primary
+            # line so the label sits where the line actually is, not at
+            # the true road centre. The line offset alone then keeps
+            # cross-category labels from stacking on shared corridors.
+            primary_itm = _project_itm(components[0]) if components else None
+            if stops and primary_itm is not None:
                 target_k = max(2, round(total_m / LABEL_INTERVAL_M) + 1)
                 for idx in sample_stop_indices(len(stops), target_k):
-                    lon, lat = stops[idx]
+                    stop_lon, stop_lat = stops[idx]
+                    sx, sy = _TO_ITM.transform(stop_lon, stop_lat)
+                    nearest = primary_itm.interpolate(primary_itm.project(_Point(sx, sy)))
+                    lon, lat = _TO_WGS.transform(nearest.x, nearest.y)
                     cat_samples.append((lon, lat, short))
             else:
                 for line in components:

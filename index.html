@@ -76,12 +76,15 @@
     }
 
     /* Applied to badges that don't belong to the currently-selected
-       route(s); washes them out to grey so the selection stands out. */
+       route(s). Fully grey, not transparent — the user wants them
+       clearly de-emphasised but still readable, not washed out. */
     .route-badge.dimmed {
-      --c: #b8b8b8;
-      background: #f4f4f4;
+      --c: #aaa;
+      background: #f1f1f1;
+      color: #888;
+      border-color: #c5c5c5;
       box-shadow: none;
-      opacity: 0.55;
+      opacity: 1;
     }
 
     .clear-highlight {
@@ -135,16 +138,11 @@
     const CATEGORY_ORDER = ['radial', 'peak', 'local', 'orbital', 'spine'];
     const LEGEND_ORDER = ['spine', 'orbital', 'local', 'peak', 'radial'];
 
-    // Per-category screen-pixel offset for label badges, so a junction
-    // served by 5 categories doesn't stack 5 badges in one spot. Lays
-    // them out around the junction in a fixed pattern.
-    const CATEGORY_BADGE_OFFSET = {
-      spine:   [0,    0],
-      orbital: [0,   -24],
-      local:   [-28, 16],
-      peak:    [28,  16],
-      radial:  [0,   28],
-    };
+    // Cross-category label separation comes from the line offset
+    // itself: the pipeline projects each label onto its category's
+    // offset line, so on a shared corridor an orbital badge sits on
+    // its blue line, a local on its green line, etc. No JS pixel
+    // nudge needed — lines and labels stay aligned.
 
     const map = L.map('map', { preferCanvas: true }).setView([53.345, -6.26], 11);
     const lineRenderer = L.canvas({ padding: 0.4 });
@@ -190,7 +188,7 @@
     }
 
     function dimStyle() {
-      return { color: '#cfcfcf', weight: 1.2, opacity: 0.4 };
+      return { color: '#cfcfcf', weight: 1.2, opacity: 0.65 };
     }
 
     function highlightStyle(baseStyle) {
@@ -316,16 +314,12 @@
         ));
         const height = lines * lineHeight + verticalPadding;
         const html = `<div class="route-badge" style="--c:${p.colour}" title="${p.routes.join(', ')}">${p.label}</div>`;
-        const [dx, dy] = CATEGORY_BADGE_OFFSET[p.category] || [0, 0];
         const marker = L.marker([lat, lon], {
           icon: L.divIcon({
             html,
             className: 'route-badge-wrapper',
             iconSize: [width, height],
-            // iconAnchor is the pixel inside the icon that maps to the
-            // lat/lon. Shifting it shifts the rendered icon in the
-            // opposite direction, giving us a per-category nudge.
-            iconAnchor: [width / 2 - dx, height / 2 - dy],
+            iconAnchor: [width / 2, height / 2],
           }),
           interactive: true,
         });
