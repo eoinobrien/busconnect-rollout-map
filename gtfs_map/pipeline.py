@@ -341,17 +341,22 @@ def build(
     # route's TRUE-position geometry (no offset, no anchor). The
     # global bundle below works on real road positions; offset is
     # purely a render-time concern applied at the final split step.
+    #
+    # Direction merging is PAUSED — we only render direction_id=0
+    # (falling back to direction_id=1 when dir 0 isn't running). The
+    # quays were rendering both directions of every route on every
+    # category-offset, producing 4-6 parallel lines per corridor and
+    # making it impossible to tell what's going on. Reinstate the
+    # secondary direction once we have a cleaner answer for one-way
+    # pair handling.
     all_routes_by_short: dict[str, list[LineString]] = {}
     for short, dirs in shapes_by_route.items():
         cat = categorise(short, high_frequency=short in hf_shorts)
         category_by_short[short] = cat
-        components: list[LineString] = []
-        for dir_id in (0, 1):
-            line = dirs.get(dir_id)
-            if line is not None:
-                components.append(line)
-        if not components:
+        primary = dirs.get(0) if dirs.get(0) is not None else dirs.get(1)
+        if primary is None:
             continue
+        components = [primary]
         pre_offset_length_m[short] = sum(
             _project_itm(c).length for c in components
         )
