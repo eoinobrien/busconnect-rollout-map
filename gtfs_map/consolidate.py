@@ -83,31 +83,35 @@ def consolidate_features(
         if len(group_ids) == 1:
             out.append(features[group_ids[0]])
             continue
-        # Union all routes
+        # Union all routes across the merged group.
         merged_routes: set[str] = set()
         lines: list[LineString] = []
         for gi in group_ids:
             f = features[gi]
             merged_routes.update(f["properties"]["route_set"])
             lines.append(LineString(f["geometry"]["coordinates"]))
-        # linemerge stitches contiguous lines together; non-mergeable
-        # pieces stay as a MultiLineString.
+
+        # linemerge stitches contiguous lines together; pieces that
+        # don't share endpoints (e.g. across a degree-3+ junction)
+        # stay as a MultiLineString. Emitting them as ONE Feature
+        # with MultiLineString geometry keeps all of them attributed
+        # to the same merged route_set without producing parallel
+        # ghost lines from per-piece emission.
         merged_geom = linemerge(MultiLineString(lines)) if len(lines) > 1 else lines[0]
         if isinstance(merged_geom, LineString):
-            pieces = [merged_geom]
+            geom_dict = mapping(merged_geom)
         else:
-            pieces = list(merged_geom.geoms)
+            geom_dict = mapping(merged_geom)  # MultiLineString -> GeoJSON MultiLineString
 
         proto_props = features[group_ids[0]]["properties"]
-        for piece in pieces:
-            out.append({
-                "type": "Feature",
-                "geometry": mapping(piece),
-                "properties": {
-                    **proto_props,
-                    "route_set": sorted(merged_routes),
-                    "route_count": len(merged_routes),
-                    "kind": "shared" if len(merged_routes) >= 2 else "single",
-                },
-            })
+        out.append({
+            "type": "Feature",
+            "geometry": geom_dict,
+            "properties": {
+                **proto_props,
+                "route_set": sorted(merged_routes),
+                "route_count": len(merged_routes),
+                "kind": "shared" if len(merged_routes) >= 2 else "single",
+            },
+        })
     return out

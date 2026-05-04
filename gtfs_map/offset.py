@@ -27,9 +27,13 @@ CATEGORY_OFFSET_M: dict[str, float] = {
 }
 
 
-def offset_line(line: LineString, distance_m: float) -> LineString:
-    """Return a parallel-offset copy of `line` shifted by distance_m
+def offset_line(geom, distance_m: float):
+    """Return a parallel-offset copy of `geom` shifted by distance_m
     metres to the right of its direction of travel.
+
+    Accepts either a LineString or a MultiLineString. For a
+    MultiLineString, each component is offset independently and the
+    result is wrapped back as a MultiLineString.
 
     Uses a manual perpendicular shift per vertex (averaging the
     surrounding segment normals) rather than shapely.parallel_offset,
@@ -40,7 +44,13 @@ def offset_line(line: LineString, distance_m: float) -> LineString:
 
     distance_m == 0 returns the input unchanged.
     """
-    if distance_m == 0 or len(line.coords) < 2:
+    if distance_m == 0:
+        return geom
+    if isinstance(geom, MultiLineString):
+        offset_pieces = [offset_line(g, distance_m) for g in geom.geoms]
+        return MultiLineString([p for p in offset_pieces if p is not None and not p.is_empty])
+    line = geom
+    if len(line.coords) < 2:
         return line
 
     # Project to ITM so distances are in metres.

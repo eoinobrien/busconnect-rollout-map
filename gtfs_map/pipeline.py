@@ -383,6 +383,10 @@ def build(
             "coordinates": [list(c) for c in smoothed.coords],
         }
 
+    # Smoothing emits LineStrings; consolidation may produce
+    # MultiLineStrings where merge groups span a degree-3 junction.
+    # The per-category emit below handles both via _shape().
+
     # Consolidate fragmented canonical edges. Adjacent edges whose
     # route_sets overlap >50% (Jaccard) merge into one feature with
     # the union of routes — collapses runs like {C1-C6}, {C1-C5},
@@ -409,10 +413,7 @@ def build(
             offset_m = CATEGORY_OFFSET_M.get(cat, 0)
             if offset_m:
                 offset_geom = offset_line(canonical_geom, offset_m)
-                geom_dict = {
-                    "type": "LineString",
-                    "coordinates": [list(c) for c in offset_geom.coords],
-                }
+                geom_dict = mapping(offset_geom)
             else:
                 geom_dict = f["geometry"]
             cat_routes = sorted(
