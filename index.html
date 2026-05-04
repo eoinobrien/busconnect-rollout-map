@@ -40,9 +40,9 @@
     .leaflet-tooltip.route-tooltip {
       font-size: 12px;
       padding: 4px 8px;
+      max-width: 280px;
     }
 
-    /* Route number badges */
     .route-badge {
       background: white;
       border: 2px solid var(--c, #888);
@@ -57,6 +57,16 @@
       transform: translate(-50%, -50%);
       pointer-events: auto;
       cursor: pointer;
+      transition: opacity 0.15s, color 0.15s, border-color 0.15s, background 0.15s;
+    }
+
+    /* Applied to badges that don't belong to the currently-selected
+       route(s); washes them out to grey so the selection stands out. */
+    .route-badge.dimmed {
+      --c: #b8b8b8;
+      background: #f4f4f4;
+      box-shadow: none;
+      opacity: 0.55;
     }
 
     .clear-highlight {
@@ -105,7 +115,10 @@
       peak: 'Peak only / express (P, X)',
       radial: 'Radial routes',
     };
-    const CATEGORY_ORDER = ['spine', 'orbital', 'local', 'peak', 'radial'];
+    // Render order: lower categories drawn first, so spines paint over
+    // everything. Layer-control order matches.
+    const CATEGORY_ORDER = ['radial', 'peak', 'local', 'orbital', 'spine'];
+    const LEGEND_ORDER = ['spine', 'orbital', 'local', 'peak', 'radial'];
 
     const map = L.map('map', { preferCanvas: true }).setView([53.345, -6.26], 11);
     const lineRenderer = L.canvas({ padding: 0.4 });
@@ -127,45 +140,53 @@
       document.body.appendChild(div);
     }
 
-    // ----- highlight state ----------------------------------------------
-    // Each route line / label remembers its base style so we can restore
-    // when the user clears a selection.
-    const allRouteLines = [];   // {layer, feature, baseStyle}
-    const allLabelMarkers = []; // {marker, routeName, category}
-    let selectedRoute = null;
+    const allLines = [];   // {layer, feature, baseStyle}
+    const allLabels = [];  // {marker, routes, category}
+    let selectedRoutes = null;  // Set<string> or null
+
+    function lineWeight(feature) {
+      const c = feature.properties.route_count || 1;
+      // Shared segments are emphasised; cap so very-popular corridors
+      // don't draw a 20 px line.
+      return Math.min(2 + Math.sqrt(c), 6);
+    }
 
     function lineStyle(feature) {
       const p = feature.properties;
-      const isTrunk = p.kind === 'trunk';
+      const isShared = p.kind === 'shared';
       return {
         color: p.colour,
-        weight: isTrunk ? 4.5 : 2.5,
-        opacity: isTrunk ? 0.9 : 0.75,
+        weight: lineWeight(feature),
+        opacity: isShared ? 0.92 : 0.7,
         lineCap: 'round',
         lineJoin: 'round',
       };
     }
 
     function dimStyle() {
-      return { color: '#cfcfcf', weight: 1.2, opacity: 0.45 };
+      return { color: '#cfcfcf', weight: 1.2, opacity: 0.4 };
     }
 
     function highlightStyle(baseStyle) {
-      return { ...baseStyle, weight: (baseStyle.weight || 3) + 2, opacity: 1 };
+      return {
+        ...baseStyle,
+        weight: (baseStyle.weight || 3) + 2,
+        opacity: 1,
+      };
     }
 
     function routesOnFeature(f) {
-      // A feature lists either a single route_short_name (for non-spine
-      // and label points) or a route_set (for bundled spine segments).
       if (f.properties.route_set) return f.properties.route_set;
+      if (f.properties.routes) return f.properties.routes;
       if (f.properties.route_short_name) return [f.properties.route_short_name];
       return [];
     }
 
-    function applyHighlight(routeName) {
-      selectedRoute = routeName;
-      for (const item of allRouteLines) {
-        const matches = routesOnFeature(item.feature).includes(routeName);
+    function applyHighlight(routeNames) {
+      const set = new Set(routeNames);
+      selectedRoutes = set;
+      for (const item of allLines) {
+        const matches = routesOnFeature(item.feature).some(r => set.has(r));
         if (matches) {
           item.layer.setStyle(highlightStyle(item.baseStyle));
           if (item.layer.bringToFront) item.layer.bringToFront();
@@ -173,22 +194,27 @@
           item.layer.setStyle(dimStyle());
         }
       }
-      for (const item of allLabelMarkers) {
+      for (const item of allLabels) {
         const el = item.marker.getElement();
         if (!el) continue;
-        el.style.opacity = item.routeName === routeName ? '1' : '0.15';
+        const badge = el.querySelector('.route-badge');
+        if (!badge) continue;
+        const matches = item.routes.some(r => set.has(r));
+        badge.classList.toggle('dimmed', !matches);
       }
       document.getElementById('clearHighlight').style.display = 'block';
     }
 
     function clearHighlight() {
-      selectedRoute = null;
-      for (const item of allRouteLines) {
+      selectedRoutes = null;
+      for (const item of allLines) {
         item.layer.setStyle(item.baseStyle);
       }
-      for (const item of allLabelMarkers) {
+      for (const item of allLabels) {
         const el = item.marker.getElement();
-        if (el) el.style.opacity = '1';
+        if (!el) continue;
+        const badge = el.querySelector('.route-badge');
+        if (badge) badge.classList.remove('dimmed');
       }
       document.getElementById('clearHighlight').style.display = 'none';
     }
@@ -198,23 +224,23 @@
 
     function tooltipForLine(f) {
       const p = f.properties;
-      if (p.route_set) {
-        const label = p.kind === 'trunk' ? 'Trunk' : 'Branch';
-        return `<b>${p.spine}-spine ${label}</b><br>${p.route_set.join(', ')}`;
-      }
-      return `<b>${p.route_short_name}</b><br>${p.route_long_name || ''}<br><i>${p.agency || ''}</i>`;
+      const routes = routesOnFeature(f);
+      const kindLabel = p.kind === 'shared' ? 'Shared section' : 'Single route';
+      return `<b>${kindLabel}</b><br>${routes.join(', ')}<br><i>${CATEGORY_LABELS[p.category] || p.category}</i>`;
     }
 
-    // ----- main ----------------------------------------------------------
+    function tooltipForLabel(f) {
+      const p = f.properties;
+      return `<b>${p.routes.join(', ')}</b><br><i>${CATEGORY_LABELS[p.category] || p.category} terminus</i>`;
+    }
+
     Promise.all([
-      fetch('output/spines.geojson').then(r => r.json()),
-      fetch('output/routes.geojson').then(r => r.json()),
+      fetch('output/segments.geojson').then(r => r.json()),
       fetch('output/labels.geojson').then(r => r.json()),
       fetch('output/meta.json').then(r => r.json()),
-    ]).then(([spines, routes, labels, meta]) => {
-      const categoryGroups = Object.fromEntries(
-        CATEGORY_ORDER.map(c => [c, L.layerGroup()])
-      );
+    ]).then(([segments, labels, meta]) => {
+      const groupsByCategory = {};
+      for (const cat of CATEGORY_ORDER) groupsByCategory[cat] = L.layerGroup();
 
       function addLine(feature) {
         const cat = feature.properties.category || 'radial';
@@ -230,40 +256,36 @@
           });
           l.on('click', (ev) => {
             L.DomEvent.stopPropagation(ev);
-            const routes = routesOnFeature(l.feature);
-            // For spine trunks listing many routes, picking the first
-            // is a reasonable default; user can always click a branch.
-            applyHighlight(routes[0]);
+            applyHighlight(routesOnFeature(l.feature));
           });
         });
-        layer.addTo(categoryGroups[cat]);
-        allRouteLines.push({ layer, feature, baseStyle });
+        layer.addTo(groupsByCategory[cat]);
+        allLines.push({ layer, feature, baseStyle });
       }
 
-      for (const f of spines.features) addLine(f);
-      for (const f of routes.features) addLine(f);
+      for (const f of segments.features) addLine(f);
 
-      // Labels: one DivIcon per terminus, hidden until zoomed in to
-      // keep the city-wide view legible.
       const labelLayer = L.layerGroup();
       for (const f of labels.features) {
         const p = f.properties;
         const [lon, lat] = f.geometry.coordinates;
-        const html = `<div class="route-badge" style="--c:${p.colour}">${p.route_short_name}</div>`;
+        const html = `<div class="route-badge" style="--c:${p.colour}" title="${p.routes.join(', ')}">${p.label}</div>`;
         const marker = L.marker([lat, lon], {
           icon: L.divIcon({ html, className: '', iconSize: null }),
           interactive: true,
         });
+        marker.bindTooltip(tooltipForLabel(f), {
+          className: 'route-tooltip',
+          direction: 'top',
+        });
         marker.on('click', (ev) => {
           L.DomEvent.stopPropagation(ev);
-          applyHighlight(p.route_short_name);
+          applyHighlight(p.routes);
         });
         marker.addTo(labelLayer);
-        allLabelMarkers.push({ marker, routeName: p.route_short_name, category: p.category });
+        allLabels.push({ marker, routes: p.routes, category: p.category });
       }
 
-      // Toggle labels with zoom: the city view shows too many to be
-      // useful at z<=11, so attach the label layer only above that.
       function syncLabels() {
         if (map.getZoom() >= 12 && !map.hasLayer(labelLayer)) {
           labelLayer.addTo(map);
@@ -274,37 +296,37 @@
       map.on('zoomend', syncLabels);
       syncLabels();
 
-      // All categories on by default.
-      for (const cat of CATEGORY_ORDER) categoryGroups[cat].addTo(map);
+      // Add categories in render order: radial first (back), spine last (front).
+      for (const cat of CATEGORY_ORDER) groupsByCategory[cat].addTo(map);
 
-      // Layer control with category swatches
+      // Layer control in legend order: spine top, radial bottom.
       const overlays = {};
-      for (const cat of CATEGORY_ORDER) {
+      for (const cat of LEGEND_ORDER) {
         const colour = meta.category_colours[cat];
-        const label = `<span style="display:inline-block;width:12px;height:3px;background:${colour};margin-right:6px;vertical-align:middle"></span>${CATEGORY_LABELS[cat]}`;
-        overlays[label] = categoryGroups[cat];
+        const swatch = `<span style="display:inline-block;width:12px;height:3px;background:${colour};margin-right:6px;vertical-align:middle"></span>`;
+        const count = (meta.category_route_counts || {})[cat] || 0;
+        overlays[`${swatch}${CATEGORY_LABELS[cat]} (${count})`] = groupsByCategory[cat];
       }
       L.control.layers(null, overlays, { collapsed: false, position: 'topright' }).addTo(map);
 
-      // Legend
       const legend = L.control({ position: 'bottomright' });
       legend.onAdd = function () {
         const div = L.DomUtil.create('div', 'legend');
         let html = '<h4>Route categories</h4>';
-        for (const cat of CATEGORY_ORDER) {
+        for (const cat of LEGEND_ORDER) {
           const c = meta.category_colours[cat];
-          html += `<div><span class="swatch" style="background:${c}"></span>${CATEGORY_LABELS[cat]}</div>`;
+          const count = (meta.category_route_counts || {})[cat] || 0;
+          html += `<div><span class="swatch" style="background:${c}"></span>${CATEGORY_LABELS[cat]} <span style="color:#888">(${count})</span></div>`;
         }
+        const hf = meta.high_frequency_route_count || 0;
         const labelCount = labels.features.length;
-        html += `<div class="meta">Network of ${meta.reference_date}<br>${meta.route_count} routes &middot; ${meta.spine_feature_count + meta.other_feature_count} segments &middot; ${labelCount} labels<br><i>Click a route to highlight</i></div>`;
+        html += `<div class="meta">Network of ${meta.reference_date}<br>${meta.route_count} routes &middot; ${meta.segment_feature_count} segments &middot; ${labelCount} labels<br>${hf} routes promoted to red by 8 am frequency<br><i>Click a route to highlight</i></div>`;
         div.innerHTML = html;
         return div;
       };
       legend.addTo(map);
 
-      // Clicking the basemap (anywhere not on a feature) clears the
-      // current highlight.
-      map.on('click', () => { if (selectedRoute) clearHighlight(); });
+      map.on('click', () => { if (selectedRoutes) clearHighlight(); });
     }).catch(err => {
       console.error(err);
       showError(
