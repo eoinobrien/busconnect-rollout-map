@@ -34,10 +34,11 @@ def main() -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    spines, routes, meta = build(Path(args.gtfs), args.date)
+    spines, routes, meta, labels = build(Path(args.gtfs), args.date, with_labels=True)
 
     (out_dir / "spines.geojson").write_text(json.dumps(spines))
     (out_dir / "routes.geojson").write_text(json.dumps(routes))
+    (out_dir / "labels.geojson").write_text(json.dumps(labels))
     (out_dir / "meta.json").write_text(json.dumps(meta, indent=2))
 
     print(f"Reference date:           {meta['reference_date']}")
@@ -46,7 +47,8 @@ def main() -> None:
     print(f"Spine letters present:    {', '.join(meta['spine_letters_present'])}")
     print(f"Spine features:           {meta['spine_feature_count']}")
     print(f"Other-route features:     {meta['other_feature_count']}")
-    print(f"Wrote: {out_dir}/spines.geojson, routes.geojson, meta.json")
+    print(f"Label features:           {meta['label_feature_count']}")
+    print(f"Wrote: {out_dir}/spines.geojson, routes.geojson, labels.geojson, meta.json")
 
 
 if __name__ == "__main__":

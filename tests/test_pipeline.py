@@ -3,7 +3,7 @@ synthetic mini-feed."""
 
 from pathlib import Path
 
-import pytest
+import pytest  # noqa: F401  (used as pytest.approx)
 
 from gtfs_map.pipeline import build
 
@@ -118,3 +118,48 @@ def test_build_filters_out_sunday_only_services_on_a_weekday(fake_gtfs):
 def test_build_meta_records_reference_date(fake_gtfs):
     _, _, meta = build(fake_gtfs, "2026-05-05")
     assert meta["reference_date"] == "2026-05-05"
+
+
+def test_spine_features_are_coloured_red_and_categorised_spine(fake_gtfs):
+    spines, _, _ = build(fake_gtfs, "2026-05-05")
+    for f in spines["features"]:
+        p = f["properties"]
+        assert p["category"] == "spine"
+        assert p["colour"].lower() == "#d62728"
+
+
+def test_non_spine_features_carry_their_category_and_colour(fake_gtfs):
+    _, routes, _ = build(fake_gtfs, "2026-05-05")
+    # The fixture only has '46' (radial) so far.
+    assert routes["features"], "fixture should produce some non-spine routes"
+    cats = {f["properties"]["category"] for f in routes["features"]}
+    assert "radial" in cats
+    for f in routes["features"]:
+        p = f["properties"]
+        assert "colour" in p
+        assert "category" in p
+
+
+def test_build_emits_a_label_feature_collection_with_route_termini(fake_gtfs):
+    spines, routes, _, labels = build(fake_gtfs, "2026-05-05", with_labels=True)
+    # One label per (route_short_name, terminus) — we expect at least
+    # one for each route in the fixture: A1, A2, 46.
+    short_names = {f["properties"]["route_short_name"] for f in labels["features"]}
+    assert {"A1", "A2", "46"} <= short_names
+
+    # Each label is a Point with a colour and a category.
+    for f in labels["features"]:
+        assert f["geometry"]["type"] == "Point"
+        assert "colour" in f["properties"]
+        assert "category" in f["properties"]
+
+
+def test_labels_for_a_route_sit_at_either_end_of_its_shape(fake_gtfs):
+    _, _, _, labels = build(fake_gtfs, "2026-05-05", with_labels=True)
+    a1_labels = [f for f in labels["features"] if f["properties"]["route_short_name"] == "A1"]
+    # A1 should have at least its start and end as label positions.
+    assert len(a1_labels) >= 2
+    coords = sorted(tuple(f["geometry"]["coordinates"]) for f in a1_labels)
+    # A1 in the fixture goes (-6.30, 53.30) -> ... -> (-6.20, 53.40)
+    assert coords[0][0] == pytest.approx(-6.30, abs=0.01)
+    assert coords[-1][1] == pytest.approx(53.40, abs=0.01)
