@@ -13,6 +13,7 @@ from .bundle import bundle_routes
 from .category import CATEGORY_COLOURS, categorise, category_colour
 from .frequency import high_frequency_route_ids_from_files
 from .merge import combine_directions
+from .offset import CATEGORY_OFFSET_M, offset_line
 from .services import active_services_for_date
 from .shapes import build_linestrings, representative_shape_ids
 
@@ -212,6 +213,12 @@ def build(
         components = combine_directions(
             primary, secondary, threshold_m=DIRECTION_MERGE_THRESHOLD_M
         )
+        # Apply per-category perpendicular offset so a corridor served
+        # by routes of different classes shows them as parallel
+        # neighbours rather than over-painting one another.
+        offset_m = CATEGORY_OFFSET_M.get(cat, 0)
+        if offset_m:
+            components = [offset_line(c, offset_m) for c in components]
         routes_by_category[cat][short] = components
 
     # Bundle each category and emit a single Feature collection.
