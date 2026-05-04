@@ -189,6 +189,7 @@
     // nudge needed — lines and labels stay aligned.
 
     const map = L.map('map', { preferCanvas: true }).setView([53.345, -6.26], 11);
+    window.map = map;  // expose for headless inspection
     const lineRenderer = L.canvas({ padding: 0.4 });
 
     L.tileLayer(
@@ -262,18 +263,10 @@
           item.layer.setStyle(dimStyle());
         }
       }
-      for (const item of allLabels) {
-        const el = item.marker.getElement();
-        if (!el) continue;
-        const badge = el.querySelector('.route-badge');
-        if (!badge) continue;
-        const matches = item.routes.some(r => set.has(r));
-        badge.classList.toggle('dimmed', !matches);
-        // Lift the selected route's badges above the dimmed ones so
-        // they're never covered. The Leaflet marker pane uses zIndex
-        // on the icon container.
-        el.style.zIndex = matches ? 1000 : '';
-      }
+      // Label visibility is recomputed centrally in syncLabels — it
+      // already knows about the new selectedRoutes and will hide
+      // non-matching badges. No per-label dim class needed.
+      syncLabelsRef();
       document.getElementById('clearHighlight').style.display = 'block';
     }
 
@@ -282,15 +275,15 @@
       for (const item of allLines) {
         item.layer.setStyle(item.baseStyle);
       }
-      for (const item of allLabels) {
-        const el = item.marker.getElement();
-        if (!el) continue;
-        const badge = el.querySelector('.route-badge');
-        if (badge) badge.classList.remove('dimmed');
-        el.style.zIndex = '';
-      }
+      syncLabelsRef();
       document.getElementById('clearHighlight').style.display = 'none';
     }
+
+    // Forward reference: syncLabels is defined inside the data-load
+    // callback (it needs label layer state). applyHighlight and
+    // clearHighlight are defined before that callback runs, so we
+    // route through a mutable holder.
+    let syncLabelsRef = () => {};
 
     document.getElementById('clearHighlight').addEventListener('click', clearHighlight);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') clearHighlight(); });
@@ -416,15 +409,27 @@
           else if (!shouldShow && map.hasLayer(ll)) map.removeLayer(ll);
         }
 
-        // Per-badge visibility based on zoom + cluster size.
+        // Per-badge visibility: zoom + cluster-size threshold AND, when
+        // a selection (single route or phase) is active, restrict to
+        // badges whose routes intersect the selection. Non-matching
+        // badges hide entirely instead of dimming so the chosen
+        // routes' labels are uncluttered.
         for (const item of allLabels) {
           const el = item.marker.getElement();
           if (!el) continue;
-          el.style.display = shouldShowBadge(item, zoom) ? '' : 'none';
+          let visible = shouldShowBadge(item, zoom);
+          if (visible && selectedRoutes) {
+            visible = item.routes.some(r => selectedRoutes.has(r));
+          }
+          el.style.display = visible ? '' : 'none';
         }
       }
       map.on('zoomend', syncLabels);
       map.on('overlayadd', (e) => { if (e.name && e._cat) { /* set below */ } });
+
+      // Expose to applyHighlight/clearHighlight which were defined
+      // before this closure ran.
+      syncLabelsRef = syncLabels;
 
       // Add categories in render order: radial first (back), spine last (front).
       for (const cat of CATEGORY_ORDER) groupsByCategory[cat].addTo(map);
