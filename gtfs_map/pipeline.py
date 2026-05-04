@@ -9,6 +9,8 @@ import pyproj
 from shapely.geometry import LineString, mapping
 from shapely.ops import transform
 
+from shapely.geometry import shape as _shape
+
 from .bundle import bundle_routes
 from .category import CATEGORY_COLOURS, categorise, category_colour
 from .frequency import high_frequency_route_ids_from_files
@@ -16,6 +18,7 @@ from .merge import combine_directions
 from .offset import CATEGORY_OFFSET_M, offset_line
 from .services import active_services_for_date
 from .shapes import build_linestrings, representative_shape_ids
+from .smooth import smooth_line
 
 
 CITY_AGENCIES = {"7778019", "7778021"}
@@ -36,6 +39,10 @@ DIRECTION_MERGE_THRESHOLD_M = 30.0
 # Approximate spacing between mid-route badges (in metres). Termini are
 # always sampled regardless.
 LABEL_INTERVAL_M = 3000.0
+
+# Douglas-Peucker tolerance applied after bundling to clean up the
+# staircase artifacts left by 2 m quantization.
+SMOOTH_TOLERANCE_M = 3.0
 
 
 _TO_ITM = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:2157", always_xy=True)
@@ -230,6 +237,13 @@ def build(
         feats = bundle_routes(routes_in_cat)
         colour = category_colour(cat)
         for f in feats:
+            # Smooth out staircase from 2 m bundling grid.
+            geom = _shape(f["geometry"])
+            smoothed = smooth_line(geom, tolerance_m=SMOOTH_TOLERANCE_M)
+            f["geometry"] = {
+                "type": "LineString",
+                "coordinates": [list(c) for c in smoothed.coords],
+            }
             f["properties"]["category"] = cat
             f["properties"]["colour"] = colour
         all_segments.extend(feats)
