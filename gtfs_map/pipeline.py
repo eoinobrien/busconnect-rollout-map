@@ -73,11 +73,11 @@ SMOOTH_TOLERANCE_M = 4.0
 
 # Tolerance used by the single GLOBAL bundle across every route in the
 # city. Routes whose densified, projected points sit within this many
-# metres of each other share canonical edges. Tuned wider than typical
-# road width (~10 m) to absorb GTFS shape sampling noise (~5-10 m) and
-# bus lane offsets (~3-5 m), but tighter than typical one-way pair
-# spacing (Dublin's quays at ~50 m) so different streets stay distinct.
-GLOBAL_BUNDLE_TOLERANCE_M = 25.0
+# metres of each other share canonical edges. Verified at 18 m via
+# diagnose_jaggedness.py: 0% of sampled output points sit >30 m from
+# any of the routes' actual GTFS shapes (the bundle isn't pulling
+# routes onto roads they don't run on).
+GLOBAL_BUNDLE_TOLERANCE_M = 18.0
 
 
 _TO_ITM = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:2157", always_xy=True)
