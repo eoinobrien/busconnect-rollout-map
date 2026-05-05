@@ -116,32 +116,22 @@ def build(
     shapes_df = shapes_df[shapes_df["shape_id"].isin(needed_shape_ids)]
     lines = build_linestrings(shapes_df)
 
-    # Group rep shapes by route_short_name + direction so we can
-    # prefer dir 0 and fall back to dir 1.
-    shapes_by_route: dict[str, dict[int, tuple[str, str, LineString]]] = defaultdict(dict)
-    for (route_id, dir_id), shape_id in rep_shapes.items():
+    # Emit one Feature per (route, direction). A route running in
+    # both directions today produces two Features sharing
+    # route_short_name; each carries its direction_id and the
+    # representative shape for that direction.
+    features: list[dict] = []
+    rendered_shorts: set[str] = set()
+    # Iterate in deterministic order: by route_id then direction_id.
+    for (route_id, dir_id) in sorted(rep_shapes):
+        shape_id = rep_shapes[(route_id, dir_id)]
         line = lines.get(shape_id)
         if line is None:
             continue
         short = short_by_id[route_id]
-        shapes_by_route[short][int(dir_id)] = (route_id, shape_id, line)
-
-    features: list[dict] = []
-    rendered_shorts: set[str] = set()
-    for short, dirs in shapes_by_route.items():
-        if 0 in dirs:
-            route_id, _shape_id, line = dirs[0]
-            chosen_dir = 0
-        elif 1 in dirs:
-            route_id, _shape_id, line = dirs[1]
-            chosen_dir = 1
-        else:
-            continue
         cat = categorise(short, high_frequency=short in hf_shorts)
         colour = category_colour(cat)
         phase = short_to_phase.get(short, LEGACY_PHASE)
-        # shapely.mapping returns tuples; GeoJSON wants arrays. Convert
-        # so the in-memory dict matches the JSON-roundtripped form.
         geometry = {
             "type": "LineString",
             "coordinates": [list(c) for c in line.coords],
@@ -154,7 +144,7 @@ def build(
                     "route_short_name": short,
                     "route_long_name": long_by_id.get(route_id, ""),
                     "agency": AGENCY_LABEL.get(agency_by_id.get(route_id, ""), ""),
-                    "direction_id": chosen_dir,
+                    "direction_id": int(dir_id),
                     "category": cat,
                     "colour": colour,
                     "phase": phase,

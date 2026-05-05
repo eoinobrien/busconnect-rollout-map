@@ -177,7 +177,9 @@ def test_E2_one_active_route_produces_one_feature(tmp_path):
     assert p["direction_id"] == 0
 
 
-def test_E3_route_with_both_directions_emits_one_feature_dir0(tmp_path):
+def test_E3_route_with_both_directions_emits_one_feature_per_direction(tmp_path):
+    """A route running in both directions today emits TWO features —
+    one per direction — each with its own representative shape."""
     d = _write_gtfs(
         tmp_path / "gtfs",
         agency=_AGENCY,
@@ -194,20 +196,32 @@ def test_E3_route_with_both_directions_emits_one_feature_dir0(tmp_path):
         ]),
         shapes=_shapes_csv({
             "S0": [(-6.30, 53.30), (-6.20, 53.30)],
-            "S1": [(-6.20, 53.30), (-6.30, 53.30)],
+            "S1": [(-6.20, 53.301), (-6.30, 53.301)],
         }),
         stop_times=_stop_times_csv([]),
         stops=_stops_csv([]),
     )
     routes, _ = build(d, "2026-05-05")
-    assert len(routes["features"]) == 1
-    f = routes["features"][0]
-    assert f["properties"]["direction_id"] == 0
-    # dir-0 shape S0 starts at (-6.30, 53.30)
-    assert f["geometry"]["coordinates"][0] == [-6.30, 53.30]
+    feats = routes["features"]
+    assert len(feats) == 2
+
+    # Same route_short_name on both
+    shorts = {f["properties"]["route_short_name"] for f in feats}
+    assert shorts == {"13"}
+
+    # One dir-0 + one dir-1
+    dirs = sorted(f["properties"]["direction_id"] for f in feats)
+    assert dirs == [0, 1]
+
+    # Geometries match each direction's shape
+    by_dir = {f["properties"]["direction_id"]: f for f in feats}
+    assert by_dir[0]["geometry"]["coordinates"][0] == [-6.30, 53.30]
+    assert by_dir[1]["geometry"]["coordinates"][0] == [-6.20, 53.301]
 
 
 def test_E4_route_with_only_direction_one_renders(tmp_path):
+    """A route that only runs in dir 1 today emits a single dir-1
+    Feature."""
     d = _write_gtfs(
         tmp_path / "gtfs",
         agency=_AGENCY,
@@ -227,6 +241,68 @@ def test_E4_route_with_only_direction_one_renders(tmp_path):
     routes, _ = build(d, "2026-05-05")
     assert len(routes["features"]) == 1
     assert routes["features"][0]["properties"]["direction_id"] == 1
+
+
+def test_E4b_route_with_only_direction_zero_renders(tmp_path):
+    """Mirror of E4 — only dir 0 today emits a single dir-0 Feature."""
+    d = _write_gtfs(
+        tmp_path / "gtfs",
+        agency=_AGENCY,
+        calendar=_CALENDAR_WEEKDAY,
+        calendar_dates=_CAL_DATES_EMPTY,
+        routes=_routes_csv([
+            {"route_id": "R1", "agency_id": "7778019", "route_short_name": "13"}
+        ]),
+        trips=_trips_csv([
+            {"route_id": "R1", "service_id": "WK", "trip_id": "T0",
+             "direction_id": 0, "shape_id": "S0"}
+        ]),
+        shapes=_shapes_csv({"S0": [(-6.30, 53.30), (-6.20, 53.30)]}),
+        stop_times=_stop_times_csv([]),
+        stops=_stops_csv([]),
+    )
+    routes, _ = build(d, "2026-05-05")
+    assert len(routes["features"]) == 1
+    assert routes["features"][0]["properties"]["direction_id"] == 0
+
+
+def test_E4c_each_direction_uses_its_most_frequent_shape(tmp_path):
+    """If a direction has multiple shape variants, the pipeline picks
+    the most-frequent one for that direction. dir-0 might use shape A
+    while dir-1 uses shape B (different streets)."""
+    d = _write_gtfs(
+        tmp_path / "gtfs",
+        agency=_AGENCY,
+        calendar=_CALENDAR_WEEKDAY,
+        calendar_dates=_CAL_DATES_EMPTY,
+        routes=_routes_csv([
+            {"route_id": "R1", "agency_id": "7778019", "route_short_name": "13"}
+        ]),
+        trips=_trips_csv([
+            # dir 0: 3 trips on S0_A, 1 on S0_B -> S0_A wins
+            {"route_id": "R1", "service_id": "WK", "trip_id": f"T0a{i}",
+             "direction_id": 0, "shape_id": "S0_A"} for i in range(3)
+        ] + [
+            {"route_id": "R1", "service_id": "WK", "trip_id": "T0b",
+             "direction_id": 0, "shape_id": "S0_B"},
+            # dir 1: only S1
+            {"route_id": "R1", "service_id": "WK", "trip_id": "T1",
+             "direction_id": 1, "shape_id": "S1"},
+        ]),
+        shapes=_shapes_csv({
+            "S0_A": [(-6.30, 53.30), (-6.20, 53.30)],
+            "S0_B": [(-6.30, 53.31), (-6.20, 53.31)],
+            "S1":   [(-6.20, 53.305), (-6.30, 53.305)],
+        }),
+        stop_times=_stop_times_csv([]),
+        stops=_stops_csv([]),
+    )
+    routes, _ = build(d, "2026-05-05")
+    by_dir = {f["properties"]["direction_id"]: f for f in routes["features"]}
+    # dir 0 should use S0_A geometry (lat 53.30, not 53.31)
+    assert by_dir[0]["geometry"]["coordinates"][0] == [-6.30, 53.30]
+    # dir 1 should use S1 geometry (lat 53.305)
+    assert by_dir[1]["geometry"]["coordinates"][0] == [-6.20, 53.305]
 
 
 def test_E5_commuter_agency_7778006_excluded(tmp_path):
