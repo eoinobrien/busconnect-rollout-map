@@ -2,12 +2,15 @@
 
 Each direction's GTFS shape is preserved as its own connected
 LineString. When both exist, they're emitted as a MultiLineString
-of two components. Each direction is also simplified to remove
-small fold-back wobbles (terminal stand loops etc.) that the source
-GTFS shape often carries.
+of two components. Each direction's path is also walked once to
+drop fold-back vertices — points where the route briefly doubles
+back on itself (typical at termini where the bus enters a stand
+and exits via a tight loop).
 """
 
 from __future__ import annotations
+
+import math
 
 import pyproj
 from shapely.geometry import LineString, MultiLineString
@@ -20,31 +23,48 @@ _TO_ITM = pyproj.Transformer.from_crs(_WGS84, _ITM, always_xy=True)
 _TO_WGS = pyproj.Transformer.from_crs(_ITM, _WGS84, always_xy=True)
 
 
-# Vertices deviating less than this many metres perpendicular from
-# the chord between their neighbours are removed (Douglas-Peucker).
-# Drops fold-back wobbles, terminal stand loops, GTFS shape jitter —
-# anything tighter than 30 m doesn't represent meaningful route shape.
-_SIMPLIFY_TOLERANCE_M = 30.0
+# Drop vertex b when the detour-ratio (a->b->c)/(a->c) exceeds this.
+# A 60 degree turn has ratio 2.0; a 45 degree turn 2.6; a 30 degree
+# turn 3.9; a U-turn (~10 degrees included angle) has ratio 11.5.
+# 4.0 keeps real bends including very sharp ones while dropping
+# fold-back wobbles where the path doubles back on itself.
+_FOLD_DETOUR_RATIO = 4.0
 
 
-def _simplify(line: LineString) -> LineString:
-    """Douglas-Peucker simplify in metres, preserving overall shape
-    but dropping fold-backs and small detours.
+def _drop_fold_backs(line: LineString) -> LineString:
+    """Remove vertices b where the path a->b->c is more than
+    `_FOLD_DETOUR_RATIO` times longer than the direct chord a->c.
 
-    Short-circuits when simplification doesn't actually remove any
-    vertices, returning the original line unchanged so callers
-    don't see tiny float drift from a no-op projection round-trip.
+    Walks the line once in projected (metric) space. A genuine bend,
+    even a 30-45 degree turn, has ratio < 3 so it survives. A
+    fold-back/U-turn vertex has ratio 5+ and is removed.
     """
     if len(line.coords) < 3:
         return line
-    proj = transform(lambda x, y, z=None: _TO_ITM.transform(x, y), line)
-    simplified = proj.simplify(_SIMPLIFY_TOLERANCE_M, preserve_topology=False)
-    if simplified.is_empty or len(simplified.coords) < 2:
+    proj = [_TO_ITM.transform(x, y) for x, y in line.coords]
+
+    kept = [proj[0]]
+    for i in range(1, len(proj) - 1):
+        a = kept[-1]
+        b = proj[i]
+        c = proj[i + 1]
+        ab = math.hypot(b[0] - a[0], b[1] - a[1])
+        bc = math.hypot(c[0] - b[0], c[1] - b[1])
+        ac = math.hypot(c[0] - a[0], c[1] - a[1])
+        if ac == 0:
+            # a == c: drop b (lies on the same point)
+            continue
+        if (ab + bc) / ac > _FOLD_DETOUR_RATIO:
+            # b is a detour vertex; skip it
+            continue
+        kept.append(b)
+    kept.append(proj[-1])
+
+    if len(kept) == len(proj):
+        # No vertex dropped — return the original line untouched so
+        # callers don't see float drift from a no-op round-trip.
         return line
-    if len(simplified.coords) == len(proj.coords):
-        # Nothing was removed; avoid the float drift of a round-trip.
-        return line
-    return transform(lambda x, y, z=None: _TO_WGS.transform(x, y), simplified)
+    return LineString([_TO_WGS.transform(x, y) for x, y in kept])
 
 
 def merge_directions(
@@ -55,17 +75,17 @@ def merge_directions(
     """Combine two direction shapes of the same route into one
     geometry.
 
-    Each direction is simplified individually (DP at 30 m) to remove
-    fold-back wobbles from the source GTFS shape. Then:
-      - `b is None` -> return the simplified `a` as a LineString.
-      - both directions -> MultiLineString([simplified a, simplified b]).
+    Each direction is walked through `_drop_fold_backs` to remove
+    only fold-back / U-turn vertices (terminal stand loops, brief
+    backtracks). Real bends and curves are preserved entirely.
+    Then:
+      - `b is None` -> return the cleaned `a` as a LineString.
+      - both directions -> MultiLineString([cleaned a, cleaned b]).
 
-    `threshold_m` is accepted for API compatibility but unused —
-    the corridor-difference approach was rejected by the user as
-    producing floating fragments.
+    `threshold_m` is accepted for API compatibility but unused.
     """
-    a = _simplify(a)
+    a = _drop_fold_backs(a)
     if b is None:
         return a
-    b = _simplify(b)
+    b = _drop_fold_backs(b)
     return MultiLineString([a, b])
