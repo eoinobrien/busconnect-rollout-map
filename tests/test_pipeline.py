@@ -296,12 +296,10 @@ def test_E3b_route_with_close_directions_merges_to_one_feature(tmp_path):
     )
 
 
-def test_E3c_route_with_diverging_directions_still_one_linestring(tmp_path):
-    """Pipeline integration: even a one-way pair on streets >30 m
-    apart (Liffey-quay-style) emits ONE LineString — the shorter
-    canonical direction. The other side is dropped. The user-facing
-    contract is "one line per route, no MultiLineString".
-    """
+def test_E3c_liffey_style_one_way_pair_emits_multilinestring(tmp_path):
+    """Pipeline integration: Liffey-quay-style one-way pair where
+    the two directions use streets >30 m apart for several km emits
+    a MultiLineString Feature — both legs visible on the map."""
     d = _write_gtfs(
         tmp_path / "gtfs",
         agency=_AGENCY,
@@ -316,7 +314,8 @@ def test_E3c_route_with_diverging_directions_still_one_linestring(tmp_path):
             {"route_id": "R1", "service_id": "WK", "trip_id": "T1",
              "direction_id": 1, "shape_id": "S1"},
         ]),
-        # Two streets, ~55 m apart (Liffey-quay-pair-style).
+        # Two streets, ~55 m apart, ~6.7 km long — far above 500 m
+        # residual threshold.
         shapes=_shapes_csv({
             "S0": [(-6.30, 53.30000), (-6.20, 53.30000)],
             "S1": [(-6.20, 53.30050), (-6.30, 53.30050)],
@@ -326,15 +325,14 @@ def test_E3c_route_with_diverging_directions_still_one_linestring(tmp_path):
     )
     routes, _ = build(d, "2026-05-05")
     assert len(routes["features"]) == 1
-    assert routes["features"][0]["geometry"]["type"] == "LineString"
+    assert routes["features"][0]["geometry"]["type"] == "MultiLineString"
 
 
 def test_E4c_each_direction_picks_its_most_frequent_shape_into_merger(tmp_path):
     """The pipeline picks the most-frequent shape per direction (not
-    per route). Even when the two directions diverge, the merger
-    picks ONE — the shorter — and emits a LineString. The runner-up
-    shape (S0_B) must NOT appear, and the discarded direction's
-    coordinates also don't appear since merge_directions drops them.
+    per route). With dir 0 / dir 1 on parallel streets ~110 m apart,
+    the merger emits MultiLineString. The runner-up dir-0 shape
+    S0_B must NOT appear because S0_A is more frequent for dir 0.
     """
     d = _write_gtfs(
         tmp_path / "gtfs",
@@ -345,19 +343,15 @@ def test_E4c_each_direction_picks_its_most_frequent_shape_into_merger(tmp_path):
             {"route_id": "R1", "agency_id": "7778019", "route_short_name": "13"}
         ]),
         trips=_trips_csv([
-            # dir 0: 3 trips on S0_A, 1 on S0_B -> S0_A wins
             {"route_id": "R1", "service_id": "WK", "trip_id": f"T0a{i}",
              "direction_id": 0, "shape_id": "S0_A"} for i in range(3)
         ] + [
             {"route_id": "R1", "service_id": "WK", "trip_id": "T0b",
              "direction_id": 0, "shape_id": "S0_B"},
-            # dir 1: only S1, on a street ~110 m south of dir 0
             {"route_id": "R1", "service_id": "WK", "trip_id": "T1",
              "direction_id": 1, "shape_id": "S1"},
         ]),
         shapes=_shapes_csv({
-            # S0_A and S1 are equal length (10 km east-west). Pick
-            # one deterministically — merger uses `<=` so a wins.
             "S0_A": [(-6.30, 53.30100), (-6.20, 53.30100)],
             "S0_B": [(-6.30, 53.30200), (-6.20, 53.30200)],
             "S1":   [(-6.20, 53.30000), (-6.30, 53.30000)],
@@ -368,10 +362,14 @@ def test_E4c_each_direction_picks_its_most_frequent_shape_into_merger(tmp_path):
     routes, _ = build(d, "2026-05-05")
     assert len(routes["features"]) == 1
     f = routes["features"][0]
-    assert f["geometry"]["type"] == "LineString"
-    # The runner-up dir-0 shape (S0_B at lat 53.30200) must NOT appear.
-    lats = {round(c[1], 5) for c in f["geometry"]["coordinates"]}
+    assert f["geometry"]["type"] == "MultiLineString"
+    # S0_B's lat (53.30200) is the runner-up shape — must not appear.
+    lats = {round(c[1], 5) for line in f["geometry"]["coordinates"] for c in line}
     assert 53.30200 not in lats
+    # Canonical (S0_A at 53.30100) and the other-direction (S1 at
+    # 53.30000) should both appear.
+    assert 53.30100 in lats
+    assert 53.30000 in lats
 
 
 def test_E5_commuter_agency_7778006_excluded(tmp_path):

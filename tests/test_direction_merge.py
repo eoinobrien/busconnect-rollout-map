@@ -80,15 +80,16 @@ def test_M3_detour_curve_simplified_to_straight_when_other_is_straight():
         )
 
 
-def test_M4_diverging_directions_collapse_to_one_line():
-    """Even when the two directions are on different streets (e.g.
-    Liffey-quay one-way pair, ~55 m apart), the merger picks the
-    shorter one and discards the other. Per the user-facing
-    contract: one line per route, no MultiLineString."""
-    a = _line((-6.30, 53.300), (-6.20, 53.300))
-    b = _line((-6.20, 53.30050), (-6.30, 53.30050))  # ~55 m north
+def test_M4_substantial_divergence_yields_multi_line_string():
+    """Liffey-quay-style one-way pair: dir 0 ~10 km east on one quay,
+    dir 1 ~10 km east on another quay 55 m north. The full 10 km
+    residual is far above the 500 m drop threshold, so output keeps
+    both legs as a MultiLineString with 2 components."""
+    a = _line((-6.30, 53.300), (-6.20, 53.300))         # ~6.7 km east
+    b = _line((-6.20, 53.30050), (-6.30, 53.30050))     # ~55 m north, ~6.7 km
     out = merge_directions(a, b, threshold_m=30)
-    assert isinstance(out, LineString)
+    assert isinstance(out, MultiLineString)
+    assert len(out.geoms) == 2
 
 
 def test_M5_single_direction_passes_through_unchanged():
@@ -115,20 +116,43 @@ def test_M6_loop_route_both_directions_merges_to_one_loop():
     assert coords[0] == coords[-1]
 
 
-def test_M7_partial_divergence_collapses_to_canonical():
-    """Most of the line is shared; one segment of dir 1 strays well
-    north of dir 0. The merger keeps a (the shorter, straighter
-    line) and drops dir 1's stray altogether."""
+def test_M7_short_stray_below_threshold_is_dropped():
+    """Most of the line is shared; dir 1 has a brief east-west detour
+    (~200 m of geometry outside the 30 m corridor). The stray's
+    total residual length is well below the 500 m drop threshold,
+    so it's treated as a wobble and discarded.
+    """
     a = _line(
-        (-6.30, 53.300), (-6.25, 53.300), (-6.20, 53.300), (-6.15, 53.300),
+        (-6.30, 53.300), (-6.20, 53.300),
     )
+    # Brief bump at -6.265 to -6.262 going ~50 m north then back to
+    # corridor. Residual segment is ~200 m east-west, below 500 m.
     b = _line(
-        (-6.15, 53.30005), (-6.20, 53.30005),
-        (-6.25, 53.302),  # strays ~220 m north here
         (-6.30, 53.30005),
+        (-6.265, 53.30005),
+        (-6.2635, 53.30050),  # ~50 m north
+        (-6.262, 53.30005),
+        (-6.20, 53.30005),
     )
     out = merge_directions(a, b, threshold_m=30)
     assert isinstance(out, LineString)
-    # The output is `a` (shorter) — its lats are all 53.300.
-    for x, y in out.coords:
-        assert abs(y - 53.300) < 1e-6
+
+
+def test_M8_long_substantial_stray_above_threshold_kept_as_residual():
+    """Dir 1 has a ~3 km stray that's well above the 500 m residual
+    threshold — it's a real divergent leg, not a wobble. Keep it as
+    a MultiLineString component."""
+    a = _line(
+        (-6.30, 53.300), (-6.20, 53.300), (-6.10, 53.300), (-6.00, 53.300),
+    )
+    b = _line(
+        (-6.00, 53.30005), (-6.10, 53.30005),
+        (-6.15, 53.310),  # ~1.1 km north, then continues east
+        (-6.20, 53.310),  # stays ~1.1 km north for a stretch
+        (-6.20, 53.30005),
+        (-6.30, 53.30005),
+    )
+    out = merge_directions(a, b, threshold_m=30)
+    assert isinstance(out, MultiLineString)
+    # Canonical + at least one substantial residual
+    assert len(out.geoms) >= 2
