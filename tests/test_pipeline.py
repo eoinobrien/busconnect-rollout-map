@@ -177,9 +177,12 @@ def test_E2_one_active_route_produces_one_feature(tmp_path):
     assert p["direction_id"] == 0
 
 
-def test_E3_route_with_both_directions_emits_one_feature_per_direction(tmp_path):
-    """A route running in both directions today emits TWO features —
-    one per direction — each with its own representative shape."""
+def test_E3_route_with_both_directions_emits_one_merged_feature(tmp_path):
+    """Both directions of the same route ALWAYS merge into a single
+    Feature (LineString or MultiLineString depending on whether they
+    share a corridor or diverge). The other E3* tests cover the
+    LineString and MultiLineString cases specifically.
+    """
     d = _write_gtfs(
         tmp_path / "gtfs",
         agency=_AGENCY,
@@ -203,20 +206,8 @@ def test_E3_route_with_both_directions_emits_one_feature_per_direction(tmp_path)
     )
     routes, _ = build(d, "2026-05-05")
     feats = routes["features"]
-    assert len(feats) == 2
-
-    # Same route_short_name on both
-    shorts = {f["properties"]["route_short_name"] for f in feats}
-    assert shorts == {"13"}
-
-    # One dir-0 + one dir-1
-    dirs = sorted(f["properties"]["direction_id"] for f in feats)
-    assert dirs == [0, 1]
-
-    # Geometries match each direction's shape
-    by_dir = {f["properties"]["direction_id"]: f for f in feats}
-    assert by_dir[0]["geometry"]["coordinates"][0] == [-6.30, 53.30]
-    assert by_dir[1]["geometry"]["coordinates"][0] == [-6.20, 53.301]
+    assert len(feats) == 1
+    assert feats[0]["properties"]["route_short_name"] == "13"
 
 
 def test_E4_route_with_only_direction_one_renders(tmp_path):
@@ -266,10 +257,83 @@ def test_E4b_route_with_only_direction_zero_renders(tmp_path):
     assert routes["features"][0]["properties"]["direction_id"] == 0
 
 
-def test_E4c_each_direction_uses_its_most_frequent_shape(tmp_path):
-    """If a direction has multiple shape variants, the pipeline picks
-    the most-frequent one for that direction. dir-0 might use shape A
-    while dir-1 uses shape B (different streets)."""
+def test_E3b_route_with_close_directions_merges_to_one_feature(tmp_path):
+    """Pipeline integration: a route whose two directions sit within
+    30 m of each other (typical same-road bidirectional service)
+    emits ONE Feature, not two. The geometry is the simpler/shorter
+    of the two (curve simplification)."""
+    d = _write_gtfs(
+        tmp_path / "gtfs",
+        agency=_AGENCY,
+        calendar=_CALENDAR_WEEKDAY,
+        calendar_dates=_CAL_DATES_EMPTY,
+        routes=_routes_csv([
+            {"route_id": "R1", "agency_id": "7778019", "route_short_name": "13"}
+        ]),
+        trips=_trips_csv([
+            {"route_id": "R1", "service_id": "WK", "trip_id": "T0",
+             "direction_id": 0, "shape_id": "S0"},
+            {"route_id": "R1", "service_id": "WK", "trip_id": "T1",
+             "direction_id": 1, "shape_id": "S1"},
+        ]),
+        # Same road, dir 1 mirrors dir 0 (5 m offset, well within
+        # the 30 m default merge threshold).
+        shapes=_shapes_csv({
+            "S0": [(-6.30, 53.30), (-6.20, 53.30)],
+            "S1": [(-6.20, 53.30005), (-6.30, 53.30005)],
+        }),
+        stop_times=_stop_times_csv([]),
+        stops=_stops_csv([]),
+    )
+    routes, _ = build(d, "2026-05-05")
+    assert len(routes["features"]) == 1
+    f = routes["features"][0]
+    assert f["geometry"]["type"] == "LineString"
+    # Single direction_id field for the merged result; pipeline picks
+    # the canonical (shorter / first-tie) direction.
+    assert "direction_id" not in f["properties"] or isinstance(
+        f["properties"]["direction_id"], int
+    )
+
+
+def test_E3c_route_with_diverging_directions_emits_multilinestring(tmp_path):
+    """Pipeline integration: a one-way pair where the two directions
+    use streets >30 m apart emits ONE Feature with MultiLineString
+    geometry containing both legs."""
+    d = _write_gtfs(
+        tmp_path / "gtfs",
+        agency=_AGENCY,
+        calendar=_CALENDAR_WEEKDAY,
+        calendar_dates=_CAL_DATES_EMPTY,
+        routes=_routes_csv([
+            {"route_id": "R1", "agency_id": "7778019", "route_short_name": "13"}
+        ]),
+        trips=_trips_csv([
+            {"route_id": "R1", "service_id": "WK", "trip_id": "T0",
+             "direction_id": 0, "shape_id": "S0"},
+            {"route_id": "R1", "service_id": "WK", "trip_id": "T1",
+             "direction_id": 1, "shape_id": "S1"},
+        ]),
+        # Two streets, ~55 m apart (Liffey-quay-pair-style).
+        shapes=_shapes_csv({
+            "S0": [(-6.30, 53.30000), (-6.20, 53.30000)],
+            "S1": [(-6.20, 53.30050), (-6.30, 53.30050)],
+        }),
+        stop_times=_stop_times_csv([]),
+        stops=_stops_csv([]),
+    )
+    routes, _ = build(d, "2026-05-05")
+    assert len(routes["features"]) == 1
+    assert routes["features"][0]["geometry"]["type"] == "MultiLineString"
+
+
+def test_E4c_each_direction_picks_its_most_frequent_shape_into_merger(tmp_path):
+    """The pipeline picks the most-frequent shape per direction
+    (not per route) and feeds those into the direction merger.
+    Verify by setting dir 0 and dir 1 on streets >30 m apart so the
+    merger emits a MultiLineString containing both — and the
+    coordinates of each component come from the most-frequent shape
+    of that direction (S0_A for dir 0, not the runner-up S0_B)."""
     d = _write_gtfs(
         tmp_path / "gtfs",
         agency=_AGENCY,
@@ -285,24 +349,32 @@ def test_E4c_each_direction_uses_its_most_frequent_shape(tmp_path):
         ] + [
             {"route_id": "R1", "service_id": "WK", "trip_id": "T0b",
              "direction_id": 0, "shape_id": "S0_B"},
-            # dir 1: only S1
+            # dir 1: only S1, on a street ~110 m south of dir 0
             {"route_id": "R1", "service_id": "WK", "trip_id": "T1",
              "direction_id": 1, "shape_id": "S1"},
         ]),
         shapes=_shapes_csv({
-            "S0_A": [(-6.30, 53.30), (-6.20, 53.30)],
-            "S0_B": [(-6.30, 53.31), (-6.20, 53.31)],
-            "S1":   [(-6.20, 53.305), (-6.30, 53.305)],
+            "S0_A": [(-6.30, 53.30100), (-6.20, 53.30100)],
+            "S0_B": [(-6.30, 53.30200), (-6.20, 53.30200)],
+            "S1":   [(-6.20, 53.30000), (-6.30, 53.30000)],
         }),
         stop_times=_stop_times_csv([]),
         stops=_stops_csv([]),
     )
     routes, _ = build(d, "2026-05-05")
-    by_dir = {f["properties"]["direction_id"]: f for f in routes["features"]}
-    # dir 0 should use S0_A geometry (lat 53.30, not 53.31)
-    assert by_dir[0]["geometry"]["coordinates"][0] == [-6.30, 53.30]
-    # dir 1 should use S1 geometry (lat 53.305)
-    assert by_dir[1]["geometry"]["coordinates"][0] == [-6.20, 53.305]
+    assert len(routes["features"]) == 1
+    f = routes["features"][0]
+    assert f["geometry"]["type"] == "MultiLineString", (
+        f"expected divergent dirs > 100 m apart to be MultiLineString; "
+        f"got {f['geometry']['type']}"
+    )
+    # Two components, lat values from S0_A (53.30100) and S1 (53.30000).
+    # S0_B's 53.30200 must NOT appear because S0_A is the more frequent
+    # shape for dir 0.
+    lats = {round(c[1], 5) for line in f["geometry"]["coordinates"] for c in line}
+    assert 53.30100 in lats
+    assert 53.30000 in lats
+    assert 53.30200 not in lats
 
 
 def test_E5_commuter_agency_7778006_excluded(tmp_path):

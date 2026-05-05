@@ -9,6 +9,7 @@ import pandas as pd
 from shapely.geometry import LineString, mapping
 
 from .category import CATEGORY_COLOURS, categorise, category_colour
+from .direction_merge import merge_directions
 from .frequency import high_frequency_route_ids_from_files
 from .services import active_services_for_date
 from .shapes import build_linestrings, representative_shape_ids
@@ -20,6 +21,12 @@ AGENCY_LABEL = {"7778019": "Dublin Bus", "7778021": "Go-Ahead"}
 
 HIGH_FREQUENCY_THRESHOLD = 5
 HIGH_FREQUENCY_HOUR = 8
+
+# Two directions of the same route running within this many metres of
+# each other are treated as the same logical corridor and rendered as
+# one geometry. Outside this distance (e.g. one-way pairs on the
+# Liffey quays) they stay as separate components in a MultiLineString.
+DIRECTION_MERGE_THRESHOLD_M = 30.0
 
 LEGACY_PHASE = "legacy"
 
@@ -116,41 +123,71 @@ def build(
     shapes_df = shapes_df[shapes_df["shape_id"].isin(needed_shape_ids)]
     lines = build_linestrings(shapes_df)
 
-    # Emit one Feature per (route, direction). A route running in
-    # both directions today produces two Features sharing
-    # route_short_name; each carries its direction_id and the
-    # representative shape for that direction.
-    features: list[dict] = []
-    rendered_shorts: set[str] = set()
-    # Iterate in deterministic order: by route_id then direction_id.
-    for (route_id, dir_id) in sorted(rep_shapes):
-        shape_id = rep_shapes[(route_id, dir_id)]
+    # Emit one Feature per route. If both directions are active
+    # today, merge_directions collapses them into a single geometry
+    # (LineString when same-corridor, MultiLineString when divergent
+    # one-way pairs).
+    from shapely.geometry import LineString as _LS, MultiLineString as _MLS
+
+    routes_for_short: dict[str, str] = {}  # short -> route_id used
+    by_short_dir: dict[str, dict[int, _LS]] = defaultdict(dict)
+    for (route_id, dir_id), shape_id in rep_shapes.items():
         line = lines.get(shape_id)
         if line is None:
             continue
         short = short_by_id[route_id]
+        by_short_dir[short][int(dir_id)] = line
+        routes_for_short.setdefault(short, route_id)
+
+    features: list[dict] = []
+    rendered_shorts: set[str] = set()
+    for short in sorted(by_short_dir):
+        dirs = by_short_dir[short]
+        d0 = dirs.get(0)
+        d1 = dirs.get(1)
+        if d0 is None and d1 is None:
+            continue
+        if d0 is not None and d1 is not None:
+            geom = merge_directions(d0, d1, threshold_m=DIRECTION_MERGE_THRESHOLD_M)
+            sole_dir: int | None = None  # both directions merged
+        else:
+            geom = d0 if d0 is not None else d1
+            sole_dir = 0 if d0 is not None else 1
+
+        # Convert shapely -> GeoJSON dict (lists, not tuples).
+        if isinstance(geom, _LS):
+            geometry = {
+                "type": "LineString",
+                "coordinates": [list(c) for c in geom.coords],
+            }
+        elif isinstance(geom, _MLS):
+            geometry = {
+                "type": "MultiLineString",
+                "coordinates": [
+                    [list(c) for c in line.coords] for line in geom.geoms
+                ],
+            }
+        else:
+            continue
+
+        route_id = routes_for_short[short]
         cat = categorise(short, high_frequency=short in hf_shorts)
         colour = category_colour(cat)
         phase = short_to_phase.get(short, LEGACY_PHASE)
-        geometry = {
-            "type": "LineString",
-            "coordinates": [list(c) for c in line.coords],
+        properties: dict = {
+            "route_short_name": short,
+            "route_long_name": long_by_id.get(route_id, ""),
+            "agency": AGENCY_LABEL.get(agency_by_id.get(route_id, ""), ""),
+            "category": cat,
+            "colour": colour,
+            "phase": phase,
         }
-        features.append(
-            {
-                "type": "Feature",
-                "geometry": geometry,
-                "properties": {
-                    "route_short_name": short,
-                    "route_long_name": long_by_id.get(route_id, ""),
-                    "agency": AGENCY_LABEL.get(agency_by_id.get(route_id, ""), ""),
-                    "direction_id": int(dir_id),
-                    "category": cat,
-                    "colour": colour,
-                    "phase": phase,
-                },
-            }
-        )
+        # Only single-direction features carry a direction_id; merged-
+        # both-directions features omit it because they represent the
+        # logical corridor regardless of direction.
+        if sole_dir is not None:
+            properties["direction_id"] = sole_dir
+        features.append({"type": "Feature", "geometry": geometry, "properties": properties})
         rendered_shorts.add(short)
 
     routes_geojson = {"type": "FeatureCollection", "features": features}
