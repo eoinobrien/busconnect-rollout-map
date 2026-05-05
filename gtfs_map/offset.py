@@ -27,7 +27,7 @@ CATEGORY_OFFSET_M: dict[str, float] = {
 }
 
 
-def offset_line(geom, distance_m: float, taper_m: float = 10.0):
+def offset_line(geom, distance_m: float, taper_m: float = 3.0):
     """Return a parallel-offset copy of `geom` shifted by distance_m
     metres to the right of its direction of travel.
 
