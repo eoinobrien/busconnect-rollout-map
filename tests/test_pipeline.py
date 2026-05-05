@@ -257,11 +257,10 @@ def test_E4b_route_with_only_direction_zero_renders(tmp_path):
     assert routes["features"][0]["properties"]["direction_id"] == 0
 
 
-def test_E3b_route_with_close_directions_merges_to_one_feature(tmp_path):
-    """Pipeline integration: a route whose two directions sit within
-    30 m of each other (typical same-road bidirectional service)
-    emits ONE Feature, not two. The geometry is the simpler/shorter
-    of the two (curve simplification)."""
+def test_E3b_route_with_two_directions_emits_multilinestring(tmp_path):
+    """Pipeline integration: a route with both directions emits ONE
+    Feature with MultiLineString geometry — each direction is a
+    complete connected LineString in the components array."""
     d = _write_gtfs(
         tmp_path / "gtfs",
         agency=_AGENCY,
@@ -276,8 +275,6 @@ def test_E3b_route_with_close_directions_merges_to_one_feature(tmp_path):
             {"route_id": "R1", "service_id": "WK", "trip_id": "T1",
              "direction_id": 1, "shape_id": "S1"},
         ]),
-        # Same road, dir 1 mirrors dir 0 (5 m offset, well within
-        # the 30 m default merge threshold).
         shapes=_shapes_csv({
             "S0": [(-6.30, 53.30), (-6.20, 53.30)],
             "S1": [(-6.20, 53.30005), (-6.30, 53.30005)],
@@ -288,12 +285,11 @@ def test_E3b_route_with_close_directions_merges_to_one_feature(tmp_path):
     routes, _ = build(d, "2026-05-05")
     assert len(routes["features"]) == 1
     f = routes["features"][0]
-    assert f["geometry"]["type"] == "LineString"
-    # Single direction_id field for the merged result; pipeline picks
-    # the canonical (shorter / first-tie) direction.
-    assert "direction_id" not in f["properties"] or isinstance(
-        f["properties"]["direction_id"], int
-    )
+    assert f["geometry"]["type"] == "MultiLineString"
+    assert len(f["geometry"]["coordinates"]) == 2  # both directions
+    # Two-direction merged feature has no direction_id (it represents
+    # both)
+    assert "direction_id" not in f["properties"]
 
 
 def test_E3c_liffey_style_one_way_pair_emits_multilinestring(tmp_path):
