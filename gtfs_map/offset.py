@@ -27,27 +27,29 @@ CATEGORY_OFFSET_M: dict[str, float] = {
 }
 
 
-def offset_line(geom, distance_m: float):
+def offset_line(geom, distance_m: float, taper_m: float = 10.0):
     """Return a parallel-offset copy of `geom` shifted by distance_m
     metres to the right of its direction of travel.
 
+    The offset distance tapers smoothly to 0 within `taper_m` metres
+    of each endpoint so different-category lines converge at the
+    exact same junction node instead of ending at different
+    perpendicular positions. The middle of the line still gets the
+    full offset; only the ends pull back to the canonical position.
+
     Accepts either a LineString or a MultiLineString. For a
-    MultiLineString, each component is offset independently and the
-    result is wrapped back as a MultiLineString.
+    MultiLineString, each component is offset independently.
 
     Uses a manual perpendicular shift per vertex (averaging the
     surrounding segment normals) rather than shapely.parallel_offset,
-    which has a habit of dropping pieces at sharp corners and
-    returning a fragmented MultiLineString. The manual version is
-    guaranteed to keep the same vertex count as the input, so there
-    are no gaps in the output.
+    which drops pieces at sharp corners.
 
     distance_m == 0 returns the input unchanged.
     """
     if distance_m == 0:
         return geom
     if isinstance(geom, MultiLineString):
-        offset_pieces = [offset_line(g, distance_m) for g in geom.geoms]
+        offset_pieces = [offset_line(g, distance_m, taper_m) for g in geom.geoms]
         return MultiLineString([p for p in offset_pieces if p is not None and not p.is_empty])
     line = geom
     if len(line.coords) < 2:
@@ -71,7 +73,17 @@ def offset_line(geom, distance_m: float):
         else:
             seg_normals.append((dy / L, -dx / L))
 
-    # Per-vertex normal: average of adjacent segments.
+    # Cumulative distance from the start, used for endpoint taper.
+    cum = [0.0]
+    for i in range(1, n):
+        dx = proj[i][0] - proj[i - 1][0]
+        dy = proj[i][1] - proj[i - 1][1]
+        cum.append(cum[-1] + (dx * dx + dy * dy) ** 0.5)
+    total_len = cum[-1]
+
+    # Per-vertex normal: average of adjacent segments. Multiplied by
+    # a taper factor that goes from 0 at each endpoint to 1 once
+    # we're more than `taper_m` from any endpoint.
     out_proj: list[tuple[float, float]] = []
     for i in range(n):
         if i == 0:
@@ -89,7 +101,15 @@ def offset_line(geom, distance_m: float):
             else:
                 nx /= mag
                 ny /= mag
+
+        if taper_m > 0 and total_len > 0:
+            d_start = cum[i]
+            d_end = total_len - cum[i]
+            taper = min(1.0, min(d_start, d_end) / taper_m)
+        else:
+            taper = 1.0
+
         x, y = proj[i]
-        out_proj.append((x + nx * distance_m, y + ny * distance_m))
+        out_proj.append((x + nx * distance_m * taper, y + ny * distance_m * taper))
 
     return LineString([_TO_WGS.transform(x, y) for x, y in out_proj])
