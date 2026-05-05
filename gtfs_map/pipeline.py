@@ -20,7 +20,7 @@ CITY_AGENCIES = {"7778019", "7778021"}
 AGENCY_LABEL = {"7778019": "Dublin Bus", "7778021": "Go-Ahead"}
 
 HIGH_FREQUENCY_THRESHOLD = 5
-HIGH_FREQUENCY_HOUR = 8
+HIGH_FREQUENCY_HOUR = 6
 
 # Two directions of the same route running within this many metres of
 # each other are treated as the same logical corridor and rendered as

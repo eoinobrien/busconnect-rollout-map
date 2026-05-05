@@ -80,14 +80,15 @@ def test_M3_detour_curve_simplified_to_straight_when_other_is_straight():
         )
 
 
-def test_M4_diverging_directions_stay_as_multi_line_string():
-    """One-way pair: dir 0 east on one street, dir 1 east on another
-    street 50 m north. Both directions need to remain visible."""
+def test_M4_diverging_directions_collapse_to_one_line():
+    """Even when the two directions are on different streets (e.g.
+    Liffey-quay one-way pair, ~55 m apart), the merger picks the
+    shorter one and discards the other. Per the user-facing
+    contract: one line per route, no MultiLineString."""
     a = _line((-6.30, 53.300), (-6.20, 53.300))
     b = _line((-6.20, 53.30050), (-6.30, 53.30050))  # ~55 m north
     out = merge_directions(a, b, threshold_m=30)
-    assert isinstance(out, MultiLineString)
-    assert len(out.geoms) == 2
+    assert isinstance(out, LineString)
 
 
 def test_M5_single_direction_passes_through_unchanged():
@@ -114,10 +115,10 @@ def test_M6_loop_route_both_directions_merges_to_one_loop():
     assert coords[0] == coords[-1]
 
 
-def test_M7_partial_divergence_keeps_only_diverged_part_as_extra():
+def test_M7_partial_divergence_collapses_to_canonical():
     """Most of the line is shared; one segment of dir 1 strays well
-    north of dir 0. Merger keeps a's straight line plus the strayed
-    chunk as a separate component."""
+    north of dir 0. The merger keeps a (the shorter, straighter
+    line) and drops dir 1's stray altogether."""
     a = _line(
         (-6.30, 53.300), (-6.25, 53.300), (-6.20, 53.300), (-6.15, 53.300),
     )
@@ -127,8 +128,7 @@ def test_M7_partial_divergence_keeps_only_diverged_part_as_extra():
         (-6.30, 53.30005),
     )
     out = merge_directions(a, b, threshold_m=30)
-    assert isinstance(out, MultiLineString), (
-        f"expected MultiLineString for partial divergence, got {type(out)}"
-    )
-    # Two pieces: a's full line + b's strayed chunk
-    assert len(out.geoms) >= 2
+    assert isinstance(out, LineString)
+    # The output is `a` (shorter) — its lats are all 53.300.
+    for x, y in out.coords:
+        assert abs(y - 53.300) < 1e-6

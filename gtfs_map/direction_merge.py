@@ -53,22 +53,18 @@ def merge_directions(
     a: LineString,
     b: LineString | None,
     threshold_m: float = 30.0,
-):
-    """Merge two direction shapes of the same route.
+) -> LineString:
+    """Merge two direction shapes of the same route into a single
+    LineString.
+
+    Always returns the SHORTER of the two as canonical. A curve in one
+    direction is longer than the straight equivalent, so picking the
+    shorter line gives the straighter representation of the corridor.
+    Any divergence in the discarded direction is dropped — the user-
+    facing contract is "one line per route, regardless of detours or
+    one-way splits".
 
     If `b is None`, `a` is returned unchanged.
-
-    Otherwise:
-      - Project both to ITM (metres).
-      - Pick the shorter of the two as canonical (a curve is longer
-        than the straight line it deviates from, so the shorter line
-        is the straighter representation of the corridor).
-      - Compute the OTHER line's residual outside primary's
-        threshold-buffered corridor.
-      - If the residual is empty (or only slivers below
-        `_MIN_RESIDUAL_M`): return the canonical as a LineString.
-      - Otherwise: return a MultiLineString of [canonical] + each
-        residual piece.
 
     Inputs are LineStrings in WGS84 (lon/lat). Output is in WGS84.
     """
@@ -78,18 +74,4 @@ def merge_directions(
     a_itm = _project_to_itm(a)
     b_itm = _project_to_itm(b)
 
-    # Pick the shorter as the canonical direction.
-    if a_itm.length <= b_itm.length:
-        primary, primary_itm = a, a_itm
-        other_itm = b_itm
-    else:
-        primary, primary_itm = b, b_itm
-        other_itm = a_itm
-
-    corridor = primary_itm.buffer(threshold_m)
-    pieces = _residual_pieces(other_itm, corridor)
-    if not pieces:
-        return primary
-
-    components = [primary] + [_project_to_wgs(p) for p in pieces]
-    return MultiLineString(components)
+    return a if a_itm.length <= b_itm.length else b

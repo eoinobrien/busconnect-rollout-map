@@ -296,10 +296,12 @@ def test_E3b_route_with_close_directions_merges_to_one_feature(tmp_path):
     )
 
 
-def test_E3c_route_with_diverging_directions_emits_multilinestring(tmp_path):
-    """Pipeline integration: a one-way pair where the two directions
-    use streets >30 m apart emits ONE Feature with MultiLineString
-    geometry containing both legs."""
+def test_E3c_route_with_diverging_directions_still_one_linestring(tmp_path):
+    """Pipeline integration: even a one-way pair on streets >30 m
+    apart (Liffey-quay-style) emits ONE LineString — the shorter
+    canonical direction. The other side is dropped. The user-facing
+    contract is "one line per route, no MultiLineString".
+    """
     d = _write_gtfs(
         tmp_path / "gtfs",
         agency=_AGENCY,
@@ -324,16 +326,16 @@ def test_E3c_route_with_diverging_directions_emits_multilinestring(tmp_path):
     )
     routes, _ = build(d, "2026-05-05")
     assert len(routes["features"]) == 1
-    assert routes["features"][0]["geometry"]["type"] == "MultiLineString"
+    assert routes["features"][0]["geometry"]["type"] == "LineString"
 
 
 def test_E4c_each_direction_picks_its_most_frequent_shape_into_merger(tmp_path):
-    """The pipeline picks the most-frequent shape per direction
-    (not per route) and feeds those into the direction merger.
-    Verify by setting dir 0 and dir 1 on streets >30 m apart so the
-    merger emits a MultiLineString containing both — and the
-    coordinates of each component come from the most-frequent shape
-    of that direction (S0_A for dir 0, not the runner-up S0_B)."""
+    """The pipeline picks the most-frequent shape per direction (not
+    per route). Even when the two directions diverge, the merger
+    picks ONE — the shorter — and emits a LineString. The runner-up
+    shape (S0_B) must NOT appear, and the discarded direction's
+    coordinates also don't appear since merge_directions drops them.
+    """
     d = _write_gtfs(
         tmp_path / "gtfs",
         agency=_AGENCY,
@@ -354,6 +356,8 @@ def test_E4c_each_direction_picks_its_most_frequent_shape_into_merger(tmp_path):
              "direction_id": 1, "shape_id": "S1"},
         ]),
         shapes=_shapes_csv({
+            # S0_A and S1 are equal length (10 km east-west). Pick
+            # one deterministically — merger uses `<=` so a wins.
             "S0_A": [(-6.30, 53.30100), (-6.20, 53.30100)],
             "S0_B": [(-6.30, 53.30200), (-6.20, 53.30200)],
             "S1":   [(-6.20, 53.30000), (-6.30, 53.30000)],
@@ -364,16 +368,9 @@ def test_E4c_each_direction_picks_its_most_frequent_shape_into_merger(tmp_path):
     routes, _ = build(d, "2026-05-05")
     assert len(routes["features"]) == 1
     f = routes["features"][0]
-    assert f["geometry"]["type"] == "MultiLineString", (
-        f"expected divergent dirs > 100 m apart to be MultiLineString; "
-        f"got {f['geometry']['type']}"
-    )
-    # Two components, lat values from S0_A (53.30100) and S1 (53.30000).
-    # S0_B's 53.30200 must NOT appear because S0_A is the more frequent
-    # shape for dir 0.
-    lats = {round(c[1], 5) for line in f["geometry"]["coordinates"] for c in line}
-    assert 53.30100 in lats
-    assert 53.30000 in lats
+    assert f["geometry"]["type"] == "LineString"
+    # The runner-up dir-0 shape (S0_B at lat 53.30200) must NOT appear.
+    lats = {round(c[1], 5) for c in f["geometry"]["coordinates"]}
     assert 53.30200 not in lats
 
 
@@ -618,10 +615,12 @@ def test_C_pipeline_attaches_radial_for_low_frequency_numeric(tmp_path):
 
 
 def test_C_high_frequency_numeric_promotes_to_spine(tmp_path):
-    """Plain-numeric route with >=5 trips at 8 am should be spine."""
+    """Plain-numeric route with >=5 trips at the configured peak hour
+    should be spine."""
+    from gtfs_map.pipeline import HIGH_FREQUENCY_HOUR
     stop_times = [
         {"trip_id": f"T{i}", "stop_id": "X", "stop_sequence": 1,
-         "departure_time": f"08:{i:02d}:00"}
+         "departure_time": f"{HIGH_FREQUENCY_HOUR:02d}:{i:02d}:00"}
         for i in range(6)
     ]
     routes_csv = _routes_csv([
@@ -647,9 +646,10 @@ def test_C_high_frequency_numeric_promotes_to_spine(tmp_path):
 def test_C_high_frequency_local_stays_local(tmp_path):
     """A category-prefixed route (L*) doesn't get promoted even if
     high-frequency."""
+    from gtfs_map.pipeline import HIGH_FREQUENCY_HOUR
     stop_times = [
         {"trip_id": f"T{i}", "stop_id": "X", "stop_sequence": 1,
-         "departure_time": f"08:{i*3:02d}:00"}
+         "departure_time": f"{HIGH_FREQUENCY_HOUR:02d}:{i*3:02d}:00"}
         for i in range(6)
     ]
     d = _write_gtfs(
