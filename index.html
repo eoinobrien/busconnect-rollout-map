@@ -14,59 +14,16 @@
     html, body, #map { height: 100%; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
 
-    .legend {
+    .legend, .phase-control {
       background: rgba(255,255,255,0.95);
       padding: 10px 12px;
       border-radius: 4px;
       box-shadow: 0 1px 4px rgba(0,0,0,0.2);
       font-size: 12px;
       line-height: 1.55;
-      max-width: 260px;
+      max-width: 240px;
     }
-    .phase-control {
-      background: rgba(255,255,255,0.95);
-      padding: 10px 12px;
-      border-radius: 4px;
-      box-shadow: 0 1px 4px rgba(0,0,0,0.2);
-      font-size: 12px;
-      line-height: 1.4;
-      max-width: 260px;
-    }
-    .phase-control h4 {
-      margin: 0 0 6px 0;
-      font-size: 13px;
-    }
-    .phase-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 6px;
-      padding: 3px 6px;
-      cursor: pointer;
-      border-radius: 3px;
-    }
-    .phase-row:hover {
-      background: #f0f0f0;
-    }
-    .phase-row.active {
-      background: #fff7d6;
-      border-left: 3px solid #f5b800;
-      padding-left: 3px;
-    }
-    .phase-id {
-      font-weight: 600;
-      min-width: 24px;
-      display: inline-block;
-    }
-    .phase-date {
-      color: #666;
-      font-size: 11px;
-    }
-    .phase-count {
-      color: #888;
-      font-size: 11px;
-    }
-    .legend h4 { margin: 0 0 6px 0; font-size: 13px; }
+    .legend h4, .phase-control h4 { margin: 0 0 6px 0; font-size: 13px; }
     .legend .swatch {
       display: inline-block;
       width: 14px; height: 4px;
@@ -80,64 +37,27 @@
       font-size: 11px;
       color: #555;
     }
-
-    .leaflet-tooltip.route-tooltip {
-      font-size: 12px;
-      padding: 4px 8px;
-      max-width: 280px;
-    }
-
-    .route-badge {
-      background: white;
-      border: 2px solid var(--c, #888);
-      color: var(--c, #444);
-      padding: 2px 6px;
-      border-radius: 3px;
-      font-size: 10px;
-      font-weight: 600;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      box-shadow: 0 1px 1px rgba(0,0,0,0.15);
-      pointer-events: auto;
+    .phase-row {
+      display: flex;
+      justify-content: space-between;
       cursor: pointer;
-      transition: opacity 0.15s, color 0.15s, border-color 0.15s, background 0.15s;
-      line-height: 1.25;
-      text-align: center;
-      white-space: normal;
-      width: 100%;
-      box-sizing: border-box;
+      padding: 2px 4px;
+      border-radius: 3px;
     }
-    /* Leaflet's marker-icon parent sizes via iconSize. Override its
-       default white-background-with-border styling so the badge child
-       can paint cleanly instead of double-bordering. */
-    .route-badge-wrapper,
-    .leaflet-div-icon.route-badge-wrapper {
-      background: transparent !important;
-      border: 0 !important;
-      box-shadow: none !important;
-      padding: 0 !important;
-      width: auto !important;
-      height: auto !important;
-    }
+    .phase-row:hover { background: #f0f0f0; }
+    .phase-row.active { background: #fff7d6; border-left: 3px solid #f5b800; padding-left: 1px; }
+    .phase-id { font-weight: 600; min-width: 24px; display: inline-block; }
+    .phase-date { color: #666; font-size: 11px; }
+    .phase-count { color: #888; font-size: 11px; }
 
-    /* Applied to badges that don't belong to the currently-selected
-       route(s). Fully grey, not transparent — the user wants them
-       clearly de-emphasised but still readable, not washed out. */
-    .route-badge.dimmed {
-      --c: #aaa;
-      background: #f1f1f1;
-      color: #888;
-      border-color: #c5c5c5;
-      box-shadow: none;
-      opacity: 1;
-    }
+    .leaflet-tooltip.route-tooltip { font-size: 12px; padding: 4px 8px; }
 
     .clear-highlight {
       position: absolute;
-      top: 12px; right: 50%;
-      transform: translateX(50%);
+      top: 12px; left: 50%;
+      transform: translateX(-50%);
       z-index: 1000;
-      background: #333;
-      color: white;
+      background: #333; color: white;
       padding: 6px 12px;
       border-radius: 4px;
       font-size: 12px;
@@ -148,12 +68,10 @@
 
     .error-banner {
       position: absolute;
-      top: 10px;
-      left: 50%;
+      top: 10px; left: 50%;
       transform: translateX(-50%);
       z-index: 1000;
-      background: #c0392b;
-      color: white;
+      background: #c0392b; color: white;
       padding: 8px 14px;
       border-radius: 4px;
       font-size: 13px;
@@ -163,7 +81,7 @@
 </head>
 <body>
   <div id="map"></div>
-  <div id="clearHighlight" class="clear-highlight">Clear selection (Esc)</div>
+  <div id="clearHighlight" class="clear-highlight">Clear (Esc)</div>
   <script
     src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
@@ -177,20 +95,12 @@
       peak: 'Peak only / express (P, X)',
       radial: 'Radial routes',
     };
-    // Render order: lower categories drawn first, so spines paint over
-    // everything. Layer-control order matches.
     const CATEGORY_ORDER = ['radial', 'peak', 'local', 'orbital', 'spine'];
     const LEGEND_ORDER = ['spine', 'orbital', 'local', 'peak', 'radial'];
 
-    // Cross-category label separation comes from the line offset
-    // itself: the pipeline projects each label onto its category's
-    // offset line, so on a shared corridor an orbital badge sits on
-    // its blue line, a local on its green line, etc. No JS pixel
-    // nudge needed — lines and labels stay aligned.
-
     const map = L.map('map', { preferCanvas: true }).setView([53.345, -6.26], 11);
-    window.map = map;  // expose for headless inspection
-    const lineRenderer = L.canvas({ padding: 0.4 });
+    window.map = map;
+    const renderer = L.canvas({ padding: 0.4 });
 
     L.tileLayer(
       'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
@@ -209,53 +119,31 @@
       document.body.appendChild(div);
     }
 
-    const allLines = [];   // {layer, feature, baseStyle}
-    const allLabels = [];  // {marker, routes, category}
-    let selectedRoutes = null;  // Set<string> or null
+    const allLayers = [];   // { layer, feature, baseStyle }
+    let selectedRoutes = null;
 
-    function lineWeight(feature) {
-      const c = feature.properties.route_count || 1;
-      // Shared segments are emphasised; cap so very-popular corridors
-      // don't draw a 20 px line.
-      return Math.min(2 + Math.sqrt(c), 6);
-    }
-
-    function lineStyle(feature) {
-      const p = feature.properties;
-      const isShared = p.kind === 'shared';
+    function baseStyle(feature) {
       return {
-        color: p.colour,
-        weight: lineWeight(feature),
-        opacity: isShared ? 0.92 : 0.7,
+        color: feature.properties.colour,
+        weight: 2.5,
+        opacity: 0.85,
         lineCap: 'round',
         lineJoin: 'round',
       };
     }
 
     function dimStyle() {
-      return { color: '#cfcfcf', weight: 1.2, opacity: 0.65 };
+      return { color: '#cfcfcf', weight: 1.2, opacity: 0.5 };
     }
 
-    function highlightStyle(baseStyle) {
-      return {
-        ...baseStyle,
-        weight: (baseStyle.weight || 3) + 2,
-        opacity: 1,
-      };
-    }
-
-    function routesOnFeature(f) {
-      if (f.properties.route_set) return f.properties.route_set;
-      if (f.properties.routes) return f.properties.routes;
-      if (f.properties.route_short_name) return [f.properties.route_short_name];
-      return [];
+    function highlightStyle(base) {
+      return { ...base, weight: (base.weight || 2.5) + 2, opacity: 1 };
     }
 
     function applyHighlight(routeNames) {
-      const set = new Set(routeNames);
-      selectedRoutes = set;
-      for (const item of allLines) {
-        const matches = routesOnFeature(item.feature).some(r => set.has(r));
+      selectedRoutes = new Set(routeNames);
+      for (const item of allLayers) {
+        const matches = selectedRoutes.has(item.feature.properties.route_short_name);
         if (matches) {
           item.layer.setStyle(highlightStyle(item.baseStyle));
           if (item.layer.bringToFront) item.layer.bringToFront();
@@ -263,201 +151,59 @@
           item.layer.setStyle(dimStyle());
         }
       }
-      // Label visibility is recomputed centrally in syncLabels — it
-      // already knows about the new selectedRoutes and will hide
-      // non-matching badges. No per-label dim class needed.
-      syncLabelsRef();
       document.getElementById('clearHighlight').style.display = 'block';
     }
 
     function clearHighlight() {
       selectedRoutes = null;
-      for (const item of allLines) {
-        item.layer.setStyle(item.baseStyle);
-      }
-      syncLabelsRef();
+      for (const item of allLayers) item.layer.setStyle(item.baseStyle);
       document.getElementById('clearHighlight').style.display = 'none';
     }
-
-    // Forward reference: syncLabels is defined inside the data-load
-    // callback (it needs label layer state). applyHighlight and
-    // clearHighlight are defined before that callback runs, so we
-    // route through a mutable holder.
-    let syncLabelsRef = () => {};
 
     document.getElementById('clearHighlight').addEventListener('click', clearHighlight);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') clearHighlight(); });
 
-    function tooltipForLine(f) {
-      const p = f.properties;
-      const routes = routesOnFeature(f);
-      const kindLabel = p.kind === 'shared' ? 'Shared section' : 'Single route';
-      return `<b>${kindLabel}</b><br>${routes.join(', ')}<br><i>${CATEGORY_LABELS[p.category] || p.category}</i>`;
-    }
-
-    function tooltipForLabel(f) {
-      const p = f.properties;
-      return `<b>${p.routes.join(', ')}</b><br><i>${CATEGORY_LABELS[p.category] || p.category} terminus</i>`;
+    function tooltipFor(feature) {
+      const p = feature.properties;
+      return `<b>${p.route_short_name}</b><br>${p.route_long_name || ''}<br><i>${p.agency || ''}</i>`;
     }
 
     Promise.all([
-      fetch('output/segments.geojson').then(r => r.json()),
-      fetch('output/labels.geojson').then(r => r.json()),
+      fetch('output/routes.geojson').then(r => r.json()),
       fetch('output/meta.json').then(r => r.json()),
-    ]).then(([segments, labels, meta]) => {
+    ]).then(([routes, meta]) => {
       const groupsByCategory = {};
       for (const cat of CATEGORY_ORDER) groupsByCategory[cat] = L.layerGroup();
 
-      function addLine(feature) {
-        const cat = feature.properties.category || 'radial';
-        const baseStyle = lineStyle(feature);
-        const layer = L.geoJSON(feature, {
-          style: () => baseStyle,
-          renderer: lineRenderer,
-        });
+      for (const f of routes.features) {
+        const base = baseStyle(f);
+        const layer = L.geoJSON(f, { style: () => base, renderer });
         layer.eachLayer(l => {
-          l.bindTooltip(tooltipForLine(l.feature), {
-            className: 'route-tooltip',
-            sticky: true,
-          });
+          l.bindTooltip(tooltipFor(l.feature), { className: 'route-tooltip', sticky: true });
           l.on('click', (ev) => {
             L.DomEvent.stopPropagation(ev);
-            applyHighlight(routesOnFeature(l.feature));
+            applyHighlight([l.feature.properties.route_short_name]);
           });
         });
+        const cat = f.properties.category || 'radial';
         layer.addTo(groupsByCategory[cat]);
-        allLines.push({ layer, feature, baseStyle });
+        allLayers.push({ layer, feature: f, baseStyle: base });
       }
-
-      for (const f of segments.features) addLine(f);
-
-      // One label sub-layer per category so toggling a category in
-      // the layer control hides both its lines and its badges in one
-      // shot, and zoom-based show/hide can act per-category.
-      const labelLayersByCategory = {};
-      for (const cat of CATEGORY_ORDER) labelLayersByCategory[cat] = L.layerGroup();
-
-      for (const f of labels.features) {
-        const p = f.properties;
-        const [lon, lat] = f.geometry.coordinates;
-        // Estimate badge size from text so the leaflet container is
-        // wide enough to let multi-route labels wrap onto multiple
-        // lines without breaking every character. Account for an even
-        // border + padding budget so single- and multi-route badges
-        // get a consistent visual frame.
-        const charWidth = 6.5;
-        const horizontalPadding = 16;  // 2x6 padding + 2x2 border
-        const verticalPadding = 8;     // 2x2 padding + 2x2 border
-        const lineHeight = 13;
-        const naturalWidth = p.label.length * charWidth + horizontalPadding;
-        const width = Math.min(180, Math.max(24, naturalWidth));
-        const lines = Math.max(1, Math.ceil(
-          (p.label.length * charWidth) / (width - horizontalPadding)
-        ));
-        const height = lines * lineHeight + verticalPadding;
-        const html = `<div class="route-badge" style="--c:${p.colour}" title="${p.routes.join(', ')}">${p.label}</div>`;
-        const marker = L.marker([lat, lon], {
-          icon: L.divIcon({
-            html,
-            className: 'route-badge-wrapper',
-            iconSize: [width, height],
-            iconAnchor: [width / 2, height / 2],
-          }),
-          interactive: true,
-        });
-        marker.bindTooltip(tooltipForLabel(f), {
-          className: 'route-tooltip',
-          direction: 'top',
-        });
-        marker.on('click', (ev) => {
-          L.DomEvent.stopPropagation(ev);
-          applyHighlight(p.routes);
-        });
-        const cat = p.category || 'radial';
-        marker.addTo(labelLayersByCategory[cat]);
-        allLabels.push({ marker, routes: p.routes, category: cat });
-      }
-
-      // Track which categories the user has currently enabled (lines).
-      const enabledCategories = new Set(CATEGORY_ORDER);
-
-      // Per-zoom label visibility. At lower zooms the map is too
-      // crowded to show every stop badge, so we only show "important"
-      // ones — labels with many routes, or in higher-priority
-      // categories. As you zoom in, the threshold relaxes and more
-      // badges appear.
-      function shouldShowBadge(item, zoom) {
-        const cat = item.category;
-        const n = item.routes.length;
-        if (zoom >= 16) return true;
-        if (zoom >= 15) return n >= 1;  // all
-        if (zoom >= 14) return cat === 'spine' || n >= 2;
-        if (zoom >= 13) return cat === 'spine' || n >= 3;
-        if (zoom >= 12) return cat === 'spine' && n >= 2;
-        return false;
-      }
-
-      function syncLabels() {
-        const zoom = map.getZoom();
-
-        // Toggle category sub-layer visibility as before so disabling a
-        // category still hides everything in it.
-        for (const cat of CATEGORY_ORDER) {
-          const ll = labelLayersByCategory[cat];
-          const shouldShow = zoom >= 12 && enabledCategories.has(cat);
-          if (shouldShow && !map.hasLayer(ll)) ll.addTo(map);
-          else if (!shouldShow && map.hasLayer(ll)) map.removeLayer(ll);
-        }
-
-        // Per-badge visibility: zoom + cluster-size threshold AND, when
-        // a selection (single route or phase) is active, restrict to
-        // badges whose routes intersect the selection. Non-matching
-        // badges hide entirely instead of dimming so the chosen
-        // routes' labels are uncluttered.
-        for (const item of allLabels) {
-          const el = item.marker.getElement();
-          if (!el) continue;
-          let visible = shouldShowBadge(item, zoom);
-          if (visible && selectedRoutes) {
-            visible = item.routes.some(r => selectedRoutes.has(r));
-          }
-          el.style.display = visible ? '' : 'none';
-        }
-      }
-      map.on('zoomend', syncLabels);
-      map.on('overlayadd', (e) => { if (e.name && e._cat) { /* set below */ } });
-
-      // Expose to applyHighlight/clearHighlight which were defined
-      // before this closure ran.
-      syncLabelsRef = syncLabels;
 
       // Add categories in render order: radial first (back), spine last (front).
       for (const cat of CATEGORY_ORDER) groupsByCategory[cat].addTo(map);
-      syncLabels();
 
-      // Layer control in legend order: spine top, radial bottom.
+      // Layer control with category swatches.
       const overlays = {};
-      const overlayLabelToCategory = {};
       for (const cat of LEGEND_ORDER) {
         const colour = meta.category_colours[cat];
-        const swatch = `<span style="display:inline-block;width:12px;height:3px;background:${colour};margin-right:6px;vertical-align:middle"></span>`;
         const count = (meta.category_route_counts || {})[cat] || 0;
-        const labelHtml = `${swatch}${CATEGORY_LABELS[cat]} (${count})`;
-        overlays[labelHtml] = groupsByCategory[cat];
-        overlayLabelToCategory[labelHtml] = cat;
+        const label = `<span style="display:inline-block;width:12px;height:3px;background:${colour};margin-right:6px;vertical-align:middle"></span>${CATEGORY_LABELS[cat]} (${count})`;
+        overlays[label] = groupsByCategory[cat];
       }
       L.control.layers(null, overlays, { collapsed: false, position: 'topright' }).addTo(map);
 
-      // Reflect line-category toggles into label visibility.
-      map.on('overlayadd', (e) => {
-        const cat = overlayLabelToCategory[e.name];
-        if (cat) { enabledCategories.add(cat); syncLabels(); }
-      });
-      map.on('overlayremove', (e) => {
-        const cat = overlayLabelToCategory[e.name];
-        if (cat) { enabledCategories.delete(cat); syncLabels(); }
-      });
-
+      // Legend with build info.
       const legend = L.control({ position: 'bottomright' });
       legend.onAdd = function () {
         const div = L.DomUtil.create('div', 'legend');
@@ -468,27 +214,20 @@
           html += `<div><span class="swatch" style="background:${c}"></span>${CATEGORY_LABELS[cat]} <span style="color:#888">(${count})</span></div>`;
         }
         const hf = meta.high_frequency_route_count || 0;
-        const labelCount = labels.features.length;
-        html += `<div class="meta">Network of ${meta.reference_date}<br>${meta.route_count} routes &middot; ${meta.segment_feature_count} segments &middot; ${labelCount} labels<br>${hf} routes promoted to red by 8 am frequency<br><i>Click a route to highlight</i></div>`;
+        html += `<div class="meta">Network of ${meta.reference_date}<br>${meta.route_count} routes<br>${hf} promoted to red by 8 am frequency<br><i>Click a route to highlight</i></div>`;
         div.innerHTML = html;
         return div;
       };
       legend.addTo(map);
 
-      // Phase filter — click a phase to highlight every route launched
-      // in that BusConnects rollout phase. "Legacy" highlights everything
-      // not in any phase (i.e. pre-BusConnects routes).
+      // Phase filter.
       const phasesMeta = meta.rollout_phases || {};
       const routePhase = meta.route_phase || {};
       const phaseRouteCounts = meta.phase_route_counts || {};
       const phaseIds = Object.keys(phasesMeta).sort();
 
       function routesInPhase(phaseId) {
-        const out = [];
-        for (const [r, p] of Object.entries(routePhase)) {
-          if (p === phaseId) out.push(r);
-        }
-        return out;
+        return Object.entries(routePhase).filter(([_, p]) => p === phaseId).map(([r]) => r);
       }
 
       if (phaseIds.length || phaseRouteCounts.legacy) {
@@ -502,27 +241,18 @@
           for (const pid of phaseIds) {
             const info = phasesMeta[pid];
             const cnt = phaseRouteCounts[pid] || 0;
-            html += `<div class="phase-row" data-phase="${pid}">
-              <span><span class="phase-id">${pid}</span><span class="phase-date">&nbsp;${info.date}</span></span>
-              <span class="phase-count">${cnt}</span>
-            </div>`;
+            html += `<div class="phase-row" data-phase="${pid}"><span><span class="phase-id">${pid}</span><span class="phase-date">&nbsp;${info.date}</span></span><span class="phase-count">${cnt}</span></div>`;
           }
-          const legacyCount = phaseRouteCounts.legacy || 0;
-          if (legacyCount) {
-            html += `<div class="phase-row" data-phase="legacy">
-              <span><span class="phase-id">Legacy</span><span class="phase-date">&nbsp;pre-BusConnects</span></span>
-              <span class="phase-count">${legacyCount}</span>
-            </div>`;
+          const legacy = phaseRouteCounts.legacy || 0;
+          if (legacy) {
+            html += `<div class="phase-row" data-phase="legacy"><span><span class="phase-id">Legacy</span><span class="phase-date">&nbsp;pre-BusConnects</span></span><span class="phase-count">${legacy}</span></div>`;
           }
           div.innerHTML = html;
           div.querySelectorAll('.phase-row').forEach(row => {
             row.addEventListener('click', () => {
               const pid = row.getAttribute('data-phase');
               div.querySelectorAll('.phase-row').forEach(r => r.classList.remove('active'));
-              if (!pid) {
-                clearHighlight();
-                return;
-              }
+              if (!pid) { clearHighlight(); return; }
               row.classList.add('active');
               applyHighlight(routesInPhase(pid));
             });
@@ -536,7 +266,7 @@
     }).catch(err => {
       console.error(err);
       showError(
-        'Could not load output GeoJSON. Run "python build.py" then serve via "python -m http.server --bind 127.0.0.1" and reload.'
+        'Could not load output/routes.geojson. Run "python build.py" then serve via "python -m http.server --bind 127.0.0.1" and reload.'
       );
     });
   </script>
