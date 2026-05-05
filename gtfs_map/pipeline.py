@@ -140,10 +140,16 @@ def build(
         cat = categorise(short, high_frequency=short in hf_shorts)
         colour = category_colour(cat)
         phase = short_to_phase.get(short, LEGACY_PHASE)
+        # shapely.mapping returns tuples; GeoJSON wants arrays. Convert
+        # so the in-memory dict matches the JSON-roundtripped form.
+        geometry = {
+            "type": "LineString",
+            "coordinates": [list(c) for c in line.coords],
+        }
         features.append(
             {
                 "type": "Feature",
-                "geometry": mapping(line),
+                "geometry": geometry,
                 "properties": {
                     "route_short_name": short,
                     "route_long_name": long_by_id.get(route_id, ""),
