@@ -387,16 +387,15 @@ def build(
     # MultiLineStrings where merge groups span a degree-3 junction.
     # The per-category emit below handles both via _shape().
 
-    # Consolidation paused: it was unioning route_sets across long
-    # merge chains, attributing E-spine routes (which don't go to
-    # Heuston) to a Heuston quay corridor because at each junction
-    # the Jaccard overlap with the next canonical edge was >50%, so
-    # the merge cascaded. The geometric fragmentation is uglier but
-    # routes-don't-end-up-where-they-don't-run is more important
-    # than visual neatness.
-    # canonical_features = consolidate_features(
-    #     canonical_features, jaccard_threshold=0.5
-    # )
+    # Consolidate ONLY features with exactly equal route_sets. This
+    # collapses fragmented pieces of the same logical corridor (where
+    # bundle.linemerge couldn't bridge a junction node) without
+    # cascading attribution: a feature with route_set {C1-C6} only
+    # merges with another {C1-C6}, never with {C1-C6, E1} which would
+    # then claim E1 belongs on the corridor too.
+    canonical_features = consolidate_features(
+        canonical_features, jaccard_threshold=1.0
+    )
 
     # ---- Stage 2: per-category split with render-time offset -------------
     # For each canonical edge, emit one Feature per category present.
