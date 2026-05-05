@@ -1,8 +1,10 @@
 """Bundling primitives.
 
-share_corridor(a, b, tolerance_m, overlap_threshold) is the only
-function for now. Higher-level grouping comes in later steps once
-the primitive is solid.
+share_corridor(a, b, ...) — pairwise: do these two routes ride
+                            mostly the same road?
+corridor_groups(routes_dict, ...) — given many routes, return
+                            connected components (transitively
+                            grouped via pairwise share_corridor).
 """
 
 from __future__ import annotations
@@ -51,3 +53,56 @@ def share_corridor(
     if inside.is_empty:
         return False
     return inside.length / short.length >= overlap_threshold
+
+
+def corridor_groups(
+    routes: dict[str, LineString],
+    tolerance_m: float = 10.0,
+    overlap_threshold: float = 0.9,
+) -> list[frozenset[str]]:
+    """Group route names into connected components based on
+    pairwise `share_corridor`.
+
+    Two routes that share a corridor are in the same group. Sharing
+    is transitive — if A shares with B and B shares with C, all
+    three end up grouped even when A and C don't share directly.
+
+    Returns a list of frozensets, one per component. Singletons
+    (routes that share with no one else) are included as size-1
+    sets so the output covers every input.
+    """
+    names = list(routes)
+    if not names:
+        return []
+
+    # Union-find over names.
+    parent = {n: n for n in names}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    def union(a: str, b: str) -> None:
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    # Pre-project each route once so share_corridor doesn't redo it
+    # in the inner loop. (share_corridor still works on WGS so we
+    # just call it; speed isn't critical for now.)
+    for i in range(len(names)):
+        for j in range(i + 1, len(names)):
+            if share_corridor(
+                routes[names[i]], routes[names[j]],
+                tolerance_m=tolerance_m,
+                overlap_threshold=overlap_threshold,
+            ):
+                union(names[i], names[j])
+
+    groups: dict[str, set[str]] = {}
+    for n in names:
+        root = find(n)
+        groups.setdefault(root, set()).add(n)
+    return [frozenset(g) for g in groups.values()]
