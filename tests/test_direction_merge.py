@@ -138,6 +138,39 @@ def test_M7_short_stray_below_threshold_is_dropped():
     assert isinstance(out, LineString)
 
 
+def test_M8a_residual_endpoints_connect_back_to_canonical():
+    """A residual representing a divergent leg should visually
+    connect to the canonical at both ends (so the rendered map
+    doesn't show floating islands). Each residual piece's first
+    and last coordinates should sit on the canonical line — the
+    geometry is "closed" at the canonical."""
+    # a: long straight east 13 km
+    a_coords = [(-6.30 + i * 0.001, 53.300) for i in range(150)]
+    a = LineString(a_coords)
+    # b: parallels a for the most part, but bumps ~100 m north
+    # for ~1 km in the middle (well above 500 m residual threshold).
+    b = LineString(
+        [(-6.30, 53.30005)]
+        + [(-6.30 + i * 0.001, 53.30005) for i in range(50)]
+        + [(-6.25, 53.30100), (-6.24, 53.30100)]  # ~100 m north detour
+        + [(-6.30 + i * 0.001, 53.30005) for i in range(60, 150)]
+    )
+    out = merge_directions(a, b, threshold_m=30)
+    assert isinstance(out, MultiLineString)
+    # All residual pieces (geoms[1:]) must have their first AND last
+    # coordinate sitting within ~1 m of the canonical (geoms[0]).
+    canonical_itm = LineString([_TO_ITM.transform(x, y) for x, y in out.geoms[0].coords])
+    for piece in list(out.geoms)[1:]:
+        for endpoint in (piece.coords[0], piece.coords[-1]):
+            ex, ey = _TO_ITM.transform(endpoint[0], endpoint[1])
+            from shapely.geometry import Point as _P
+            d = canonical_itm.distance(_P(ex, ey))
+            assert d < 1.0, (
+                f"residual endpoint at {endpoint} sits {d:.1f} m from canonical "
+                f"— it should be snapped onto the canonical line"
+            )
+
+
 def test_M8_long_substantial_stray_above_threshold_kept_as_residual():
     """Dir 1 has a ~3 km stray that's well above the 500 m residual
     threshold — it's a real divergent leg, not a wobble. Keep it as

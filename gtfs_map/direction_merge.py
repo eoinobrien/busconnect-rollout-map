@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import pyproj
 from shapely.geometry import LineString, MultiLineString, Point
-from shapely.ops import transform
+from shapely.ops import nearest_points, transform
 
 
 _WGS84 = "EPSG:4326"
@@ -51,6 +51,32 @@ def _residual_pieces(line_itm: LineString, primary_corridor) -> list[LineString]
     else:  # GeometryCollection
         candidates = [g for g in getattr(leftover, "geoms", []) if isinstance(g, LineString)]
     return [p for p in candidates if p.length >= _MIN_RESIDUAL_M]
+
+
+def _connect_to_primary(
+    residual_itm: LineString, primary_itm: LineString
+) -> LineString:
+    """Extend a residual fragment's endpoints onto the primary line.
+
+    The residual was cut at the corridor boundary so its first and
+    last coordinates sit ~threshold metres off primary. Without
+    snapping, the residual renders as a floating island. Replacing
+    its endpoints with their projection onto primary makes the
+    branch visually connect at both junction nodes.
+    """
+    coords = list(residual_itm.coords)
+    if len(coords) < 2:
+        return residual_itm
+    start_pt = Point(coords[0])
+    end_pt = Point(coords[-1])
+    snapped_start = nearest_points(primary_itm, start_pt)[0]
+    snapped_end = nearest_points(primary_itm, end_pt)[0]
+    new_coords = (
+        [(snapped_start.x, snapped_start.y)]
+        + coords
+        + [(snapped_end.x, snapped_end.y)]
+    )
+    return LineString(new_coords)
 
 
 def merge_directions(
@@ -94,4 +120,8 @@ def merge_directions(
     if not pieces:
         return primary
 
-    return MultiLineString([primary] + [_project_to_wgs(p) for p in pieces])
+    # Snap each residual's endpoints onto primary so the branch
+    # connects at junction nodes instead of floating with a 30 m
+    # gap to the canonical line.
+    connected = [_connect_to_primary(p, primary_itm) for p in pieces]
+    return MultiLineString([primary] + [_project_to_wgs(p) for p in connected])
