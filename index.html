@@ -14,43 +14,126 @@
     html, body, #map { height: 100%; margin: 0; padding: 0; }
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
 
-    .legend, .phase-control {
+    .panel {
       background: rgba(255,255,255,0.95);
-      padding: 10px 12px;
-      border-radius: 4px;
+      padding: 12px 14px;
+      border-radius: 6px;
       box-shadow: 0 1px 4px rgba(0,0,0,0.2);
       font-size: 12px;
-      line-height: 1.55;
-      max-width: 240px;
+      line-height: 1.5;
+      width: 240px;
     }
-    .legend h4, .phase-control h4 { margin: 0 0 6px 0; font-size: 13px; }
-    .legend .swatch {
-      display: inline-block;
-      width: 14px; height: 4px;
-      vertical-align: middle;
-      margin-right: 6px;
-    }
-    .legend .meta {
-      margin-top: 8px;
-      padding-top: 6px;
-      border-top: 1px solid #ddd;
+    .panel h3 { margin: 0; font-size: 14px; font-weight: 700; }
+    .panel .panel-sub {
+      color: #666;
       font-size: 11px;
-      color: #555;
+      margin-top: 2px;
     }
-    .phase-row {
+    .panel .section {
+      margin-top: 12px;
+      padding-top: 10px;
+      border-top: 1px solid #ececec;
+    }
+    .panel .section-title {
+      font-size: 10px;
+      text-transform: uppercase;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      color: #888;
+      margin-bottom: 6px;
+    }
+    .panel .row {
       display: flex;
+      align-items: center;
       justify-content: space-between;
-      cursor: pointer;
-      padding: 2px 4px;
+      padding: 3px 6px;
+      margin: 1px -4px;
       border-radius: 3px;
+      cursor: pointer;
+      user-select: none;
     }
-    .phase-row:hover { background: #f0f0f0; }
-    .phase-row.active { background: #fff7d6; border-left: 3px solid #f5b800; padding-left: 1px; }
-    .phase-id { font-weight: 600; min-width: 24px; display: inline-block; }
-    .phase-date { color: #666; font-size: 11px; }
-    .phase-count { color: #888; font-size: 11px; }
+    .panel .row:hover { background: #f3f3f3; }
+    .panel .row.active { background: #fff7d6; }
+    .panel .row.inactive .label-text { color: #b5b5b5; }
+    .panel .row.inactive .swatch { opacity: 0.25; }
+    .panel .row-left {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex: 1;
+    }
+    .panel .label-text {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .panel .swatch {
+      display: inline-block;
+      width: 16px; height: 4px;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+    .panel .row-count {
+      color: #888;
+      font-size: 11px;
+      flex-shrink: 0;
+      margin-left: 8px;
+    }
+    .panel .phase-id {
+      display: inline-block;
+      min-width: 22px;
+      font-weight: 700;
+      text-align: center;
+      flex-shrink: 0;
+    }
+    .panel .phase-date {
+      color: #666;
+      font-size: 11px;
+      margin-left: 6px;
+    }
+    .panel .check {
+      width: 14px;
+      height: 14px;
+      border: 1px solid #aaa;
+      border-radius: 2px;
+      background: white;
+      flex-shrink: 0;
+      position: relative;
+    }
+    .panel .row.active .check { background: #f5b800; border-color: #d09a00; }
+    .panel .row.active .check::after {
+      content: '';
+      position: absolute;
+      left: 3px;
+      top: 0;
+      width: 4px;
+      height: 9px;
+      border: solid white;
+      border-width: 0 2px 2px 0;
+      transform: rotate(45deg);
+    }
 
     .leaflet-tooltip.route-tooltip { font-size: 12px; padding: 4px 8px; }
+
+    .route-label {
+      display: inline-flex;
+      border-radius: 3px;
+      overflow: hidden;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.2;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.15);
+      white-space: nowrap;
+      transform: translate(-50%, -50%);
+      cursor: pointer;
+    }
+    .route-label > span {
+      display: inline-block;
+      padding: 1px 5px;
+      color: white;
+      text-align: center;
+    }
 
     .clear-highlight {
       position: absolute;
@@ -120,12 +203,21 @@
     }
 
     const allLayers = [];   // { layer, feature, baseStyle }
+    const allLabels = [];   // { marker, routes }
     let selectedRoutes = null;
 
+    function weightForRoutes(n) {
+      // Stroke width grows with how many routes share this category
+      // at this corridor — a trunk carrying 6+ routes reads as
+      // visibly thicker than a single-route stretch.
+      return Math.min(2 + 0.5 * n, 6.5);
+    }
+
     function baseStyle(feature) {
+      const n = (feature.properties.routes || []).length || 1;
       return {
         color: feature.properties.colour,
-        weight: 2.5,
+        weight: weightForRoutes(n),
         opacity: 0.85,
         lineCap: 'round',
         lineJoin: 'round',
@@ -141,22 +233,34 @@
     }
 
     function applyHighlight(routeNames) {
+      // Highlight every feature whose `routes` membership intersects
+      // the selection. With per-category collapse, a clicked route
+      // lights up every category-line that carries it.
       selectedRoutes = new Set(routeNames);
       for (const item of allLayers) {
-        const matches = selectedRoutes.has(item.feature.properties.route_short_name);
-        if (matches) {
+        const fRoutes = item.feature.properties.routes || [];
+        if (fRoutes.some(r => selectedRoutes.has(r))) {
           item.layer.setStyle(highlightStyle(item.baseStyle));
           if (item.layer.bringToFront) item.layer.bringToFront();
         } else {
           item.layer.setStyle(dimStyle());
         }
       }
+      // Hide labels of unselected routes; show only labels whose
+      // `routes` overlap the selection. Bundled labels (e.g. C1/C2)
+      // remain visible if any of their routes is selected.
+      if (window._applyLabelVisibility) window._applyLabelVisibility();
       document.getElementById('clearHighlight').style.display = 'block';
     }
 
     function clearHighlight() {
       selectedRoutes = null;
       for (const item of allLayers) item.layer.setStyle(item.baseStyle);
+      if (window._applyLabelVisibility) window._applyLabelVisibility();
+      // Reset multi-select phase rows in the panel.
+      if (window._selectedPhases) window._selectedPhases.clear();
+      document.querySelectorAll('.panel [data-phase].active')
+        .forEach(r => r.classList.remove('active'));
       document.getElementById('clearHighlight').style.display = 'none';
     }
 
@@ -165,13 +269,15 @@
 
     function tooltipFor(feature) {
       const p = feature.properties;
-      return `<b>${p.route_short_name}</b><br>${p.route_long_name || ''}<br><i>${p.agency || ''}</i>`;
+      const names = (p.routes || []).join(', ');
+      return `<b>${names}</b><br>${p.route_long_name || ''}<br><i>${p.agency || ''}</i>`;
     }
 
     Promise.all([
       fetch('output/routes.geojson').then(r => r.json()),
       fetch('output/meta.json').then(r => r.json()),
-    ]).then(([routes, meta]) => {
+      fetch('output/labels.geojson').then(r => r.ok ? r.json() : { features: [] }).catch(() => ({ features: [] })),
+    ]).then(([routes, meta, labels]) => {
       const groupsByCategory = {};
       for (const cat of CATEGORY_ORDER) groupsByCategory[cat] = L.layerGroup();
 
@@ -182,7 +288,14 @@
           l.bindTooltip(tooltipFor(l.feature), { className: 'route-tooltip', sticky: true });
           l.on('click', (ev) => {
             L.DomEvent.stopPropagation(ev);
-            applyHighlight([l.feature.properties.route_short_name]);
+            // Clicking a shared segment selects every route that
+            // rides it, so the user sees all of those routes'
+            // continuous paths lit up at once. Same-category
+            // companions only — cross-category routes that share
+            // the same metre of road are emitted as their own
+            // (stacked) features and have to be clicked separately.
+            const rs = l.feature.properties.routes || [];
+            if (rs.length) applyHighlight(rs);
           });
         });
         const cat = f.properties.category || 'radial';
@@ -193,74 +306,181 @@
       // Add categories in render order: radial first (back), spine last (front).
       for (const cat of CATEGORY_ORDER) groupsByCategory[cat].addTo(map);
 
-      // Layer control with category swatches.
-      const overlays = {};
-      for (const cat of LEGEND_ORDER) {
-        const colour = meta.category_colours[cat];
-        const count = (meta.category_route_counts || {})[cat] || 0;
-        const label = `<span style="display:inline-block;width:12px;height:3px;background:${colour};margin-right:6px;vertical-align:middle"></span>${CATEGORY_LABELS[cat]} (${count})`;
-        overlays[label] = groupsByCategory[cat];
+      // Route-name labels along each route. Hide when zoomed out
+      // to avoid clutter; show as small coloured pills at z >= 13.
+      const labelLayer = L.layerGroup();
+      const LABEL_MIN_ZOOM = 13;
+      for (const f of (labels.features || [])) {
+        const p = f.properties;
+        const [lon, lat] = f.geometry.coordinates;
+        const routes = (p.routes && p.routes.length)
+          ? p.routes
+          : (p.route_short_name ? [p.route_short_name] : []);
+        // One pill per route, each in its own category colour. A
+        // [41 (spine), 41B (radial)] cluster shows red+purple side-
+        // by-side rather than a single colour that misrepresents
+        // half the bundle.
+        const cols = (p.colours && p.colours.length === routes.length)
+          ? p.colours
+          : routes.map(() => p.colour);
+        const inner = routes.map((r, i) =>
+          `<span style="background:${cols[i]}">${r}</span>`
+        ).join('');
+        const icon = L.divIcon({
+          className: '',
+          html: `<div class="route-label">${inner}</div>`,
+          iconSize: null,
+        });
+        const marker = L.marker([lat, lon], { icon, keyboard: false });
+        marker.on('click', (ev) => {
+          L.DomEvent.stopPropagation(ev);
+          if (routes.length) applyHighlight(routes);
+        });
+        labelLayer.addLayer(marker);
+        allLabels.push({ marker, routes });
       }
-      L.control.layers(null, overlays, { collapsed: false, position: 'topright' }).addTo(map);
-
-      // Legend with build info.
-      const legend = L.control({ position: 'bottomright' });
-      legend.onAdd = function () {
-        const div = L.DomUtil.create('div', 'legend');
-        let html = '<h4>Route categories</h4>';
-        for (const cat of LEGEND_ORDER) {
-          const c = meta.category_colours[cat];
-          const count = (meta.category_route_counts || {})[cat] || 0;
-          html += `<div><span class="swatch" style="background:${c}"></span>${CATEGORY_LABELS[cat]} <span style="color:#888">(${count})</span></div>`;
+      function applyLabelVisibility() {
+        for (const lbl of allLabels) {
+          const visible = !selectedRoutes
+            || lbl.routes.some(r => selectedRoutes.has(r));
+          const el = lbl.marker.getElement();
+          if (el) el.style.display = visible ? '' : 'none';
         }
-        const hf = meta.high_frequency_route_count || 0;
-        html += `<div class="meta">Network of ${meta.reference_date}<br>${meta.route_count} routes<br>${hf} promoted to red by 8 am frequency<br><i>Click a route to highlight</i></div>`;
-        div.innerHTML = html;
-        return div;
-      };
-      legend.addTo(map);
+      }
+      window._applyLabelVisibility = applyLabelVisibility;
 
-      // Phase filter.
+      function syncLabels() {
+        if (map.getZoom() >= LABEL_MIN_ZOOM) {
+          if (!map.hasLayer(labelLayer)) {
+            labelLayer.addTo(map);
+            // Markers' DOM elements only exist after they're added,
+            // so reapply visibility filter now.
+            applyLabelVisibility();
+          }
+        } else if (map.hasLayer(labelLayer)) {
+          map.removeLayer(labelLayer);
+        }
+      }
+      map.on('zoomend', syncLabels);
+      syncLabels();
+
+      // Unified control panel: header + category visibility section
+      // + BusConnects phase multi-select section. Replaces the
+      // separate Leaflet layer control, bottom-right legend, and
+      // top-left phase control.
       const phasesMeta = meta.rollout_phases || {};
       const routePhase = meta.route_phase || {};
       const phaseRouteCounts = meta.phase_route_counts || {};
       const phaseIds = Object.keys(phasesMeta).sort();
+      const hour = meta.high_frequency_hour;
+      const hourLabel = hour === 0 ? 'midnight' : hour === 12 ? 'noon' : hour < 12 ? `${hour} am` : `${hour - 12} pm`;
+      const hfCount = meta.high_frequency_route_count || 0;
 
-      function routesInPhase(phaseId) {
-        return Object.entries(routePhase).filter(([_, p]) => p === phaseId).map(([r]) => r);
+      const visibleCategories = new Set(LEGEND_ORDER);
+      const selectedPhases = new Set();
+      window._selectedPhases = selectedPhases;
+
+      function applyPhaseSelection() {
+        if (selectedPhases.size === 0) {
+          clearHighlight();
+          return;
+        }
+        const routes = [];
+        for (const [r, p] of Object.entries(routePhase)) {
+          if (selectedPhases.has(p)) routes.push(r);
+        }
+        applyHighlight(routes);
       }
 
-      if (phaseIds.length || phaseRouteCounts.legacy) {
-        const phaseControl = L.control({ position: 'topleft' });
-        phaseControl.onAdd = function () {
-          const div = L.DomUtil.create('div', 'phase-control');
-          L.DomEvent.disableClickPropagation(div);
-          L.DomEvent.disableScrollPropagation(div);
-          let html = '<h4>BusConnects phase</h4>';
-          html += `<div class="phase-row" data-phase=""><span><span class="phase-id">All</span></span><span class="phase-count">${meta.route_count}</span></div>`;
-          for (const pid of phaseIds) {
-            const info = phasesMeta[pid];
-            const cnt = phaseRouteCounts[pid] || 0;
-            html += `<div class="phase-row" data-phase="${pid}"><span><span class="phase-id">${pid}</span><span class="phase-date">&nbsp;${info.date}</span></span><span class="phase-count">${cnt}</span></div>`;
-          }
-          const legacy = phaseRouteCounts.legacy || 0;
-          if (legacy) {
-            html += `<div class="phase-row" data-phase="legacy"><span><span class="phase-id">Legacy</span><span class="phase-date">&nbsp;pre-BusConnects</span></span><span class="phase-count">${legacy}</span></div>`;
-          }
-          div.innerHTML = html;
-          div.querySelectorAll('.phase-row').forEach(row => {
-            row.addEventListener('click', () => {
-              const pid = row.getAttribute('data-phase');
-              div.querySelectorAll('.phase-row').forEach(r => r.classList.remove('active'));
-              if (!pid) { clearHighlight(); return; }
-              row.classList.add('active');
-              applyHighlight(routesInPhase(pid));
-            });
+      const panelControl = L.control({ position: 'topright' });
+      panelControl.onAdd = function () {
+        const div = L.DomUtil.create('div', 'panel');
+        L.DomEvent.disableClickPropagation(div);
+        L.DomEvent.disableScrollPropagation(div);
+
+        const catRows = LEGEND_ORDER.map(cat => {
+          const c = meta.category_colours[cat];
+          const count = (meta.category_route_counts || {})[cat] || 0;
+          return `<div class="row" data-cat="${cat}">
+            <div class="row-left">
+              <span class="swatch" style="background:${c}"></span>
+              <span class="label-text">${CATEGORY_LABELS[cat]}</span>
+            </div>
+            <span class="row-count">${count}</span>
+          </div>`;
+        }).join('');
+
+        let phaseRows = '';
+        const legacyCount = phaseRouteCounts.legacy || 0;
+        // Legacy first.
+        if (legacyCount) {
+          phaseRows += `<div class="row" data-phase="legacy">
+            <div class="row-left">
+              <span class="check"></span>
+              <span class="label-text"><span class="phase-id">—</span><span class="phase-date">pre-BusConnects</span></span>
+            </div>
+            <span class="row-count">${legacyCount}</span>
+          </div>`;
+        }
+        for (const pid of phaseIds) {
+          const info = phasesMeta[pid];
+          const cnt = phaseRouteCounts[pid] || 0;
+          phaseRows += `<div class="row" data-phase="${pid}">
+            <div class="row-left">
+              <span class="check"></span>
+              <span class="label-text"><span class="phase-id">${pid}</span><span class="phase-date">${info.date}</span></span>
+            </div>
+            <span class="row-count">${cnt}</span>
+          </div>`;
+        }
+
+        div.innerHTML = `
+          <h3>Dublin city bus network</h3>
+          <div class="panel-sub">${meta.reference_date} · ${meta.route_count} routes · ${hfCount} red by ${hourLabel}</div>
+          <div class="section">
+            <div class="section-title">Route categories</div>
+            ${catRows}
+          </div>
+          ${phaseRows ? `<div class="section">
+            <div class="section-title">BusConnects phase</div>
+            ${phaseRows}
+          </div>` : ''}
+        `;
+
+        // Category rows toggle layer visibility.
+        div.querySelectorAll('[data-cat]').forEach(row => {
+          row.addEventListener('click', () => {
+            const cat = row.getAttribute('data-cat');
+            if (visibleCategories.has(cat)) {
+              visibleCategories.delete(cat);
+              map.removeLayer(groupsByCategory[cat]);
+              row.classList.add('inactive');
+            } else {
+              visibleCategories.add(cat);
+              groupsByCategory[cat].addTo(map);
+              row.classList.remove('inactive');
+            }
           });
-          return div;
-        };
-        phaseControl.addTo(map);
-      }
+        });
+
+        // Phase rows toggle membership in the highlight selection.
+        div.querySelectorAll('[data-phase]').forEach(row => {
+          row.addEventListener('click', () => {
+            const pid = row.getAttribute('data-phase');
+            if (selectedPhases.has(pid)) {
+              selectedPhases.delete(pid);
+              row.classList.remove('active');
+            } else {
+              selectedPhases.add(pid);
+              row.classList.add('active');
+            }
+            applyPhaseSelection();
+          });
+        });
+
+        return div;
+      };
+      panelControl.addTo(map);
 
       map.on('click', () => { if (selectedRoutes) clearHighlight(); });
     }).catch(err => {
