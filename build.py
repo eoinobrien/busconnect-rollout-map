@@ -44,6 +44,7 @@ def main() -> None:
     print(f"Reference date:           {meta['reference_date']}")
     print(f"Active services:          {meta['active_service_count']}")
     print(f"Routes rendered:          {meta['route_count']}")
+    print(f"Features (segments):      {meta['feature_count']}")
     print(f"High-frequency routes:    {meta['high_frequency_route_count']}")
     print(f"Routes per category:      {meta['category_route_counts']}")
     if labels is not None:

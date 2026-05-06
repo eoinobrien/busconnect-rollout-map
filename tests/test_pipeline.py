@@ -172,17 +172,16 @@ def test_E2_one_active_route_produces_one_feature(tmp_path):
     routes, _ = build(d, "2026-05-05")
     assert len(routes["features"]) == 1
     p = routes["features"][0]["properties"]
-    assert p["route_short_name"] == "13"
+    assert p["routes"] == ["13"]
     assert p["agency"] == "Dublin Bus"
     assert p["direction_id"] == 0
 
 
-def test_E3_route_with_both_directions_emits_one_merged_feature(tmp_path):
-    """Both directions of the same route ALWAYS merge into a single
-    Feature (LineString or MultiLineString depending on whether they
-    share a corridor or diverge). The other E3* tests cover the
-    LineString and MultiLineString cases specifically.
-    """
+def test_E3_route_with_both_directions_renders_both(tmp_path):
+    """Both directions of the route appear in the output. With segment
+    bundling, tight-corridor directions collapse into one feature;
+    distant ones (Liffey-style one-way pairs) stay as two separate
+    features. Either way, every feature carries `routes=["13"]`."""
     d = _write_gtfs(
         tmp_path / "gtfs",
         agency=_AGENCY,
@@ -206,8 +205,9 @@ def test_E3_route_with_both_directions_emits_one_merged_feature(tmp_path):
     )
     routes, _ = build(d, "2026-05-05")
     feats = routes["features"]
-    assert len(feats) == 1
-    assert feats[0]["properties"]["route_short_name"] == "13"
+    assert len(feats) >= 1
+    for f in feats:
+        assert f["properties"]["routes"] == ["13"]
 
 
 def test_E4_route_with_only_direction_one_renders(tmp_path):
@@ -257,10 +257,13 @@ def test_E4b_route_with_only_direction_zero_renders(tmp_path):
     assert routes["features"][0]["properties"]["direction_id"] == 0
 
 
-def test_E3b_route_with_two_directions_emits_multilinestring(tmp_path):
-    """Pipeline integration: a route with both directions emits ONE
-    Feature with MultiLineString geometry — each direction is a
-    complete connected LineString in the components array."""
+def test_E3b_two_directions_emit_one_feature_per_direction(tmp_path):
+    """Pipeline integration: route 13's two directions ~5.5m apart
+    (well inside segment_bundle tolerance) emit TWO Features — one
+    per walker — both stacked at the same category colour. Direction
+    info is preserved per feature only when the walker's segment
+    covers a single direction; here both directions sit within
+    tolerance of each other, so neither feature carries direction_id."""
     d = _write_gtfs(
         tmp_path / "gtfs",
         agency=_AGENCY,
@@ -283,19 +286,19 @@ def test_E3b_route_with_two_directions_emits_multilinestring(tmp_path):
         stops=_stops_csv([]),
     )
     routes, _ = build(d, "2026-05-05")
-    assert len(routes["features"]) == 1
-    f = routes["features"][0]
-    assert f["geometry"]["type"] == "MultiLineString"
-    assert len(f["geometry"]["coordinates"]) == 2  # both directions
-    # Two-direction merged feature has no direction_id (it represents
-    # both)
-    assert "direction_id" not in f["properties"]
+    feats = routes["features"]
+    assert len(feats) == 2
+    for f in feats:
+        assert f["geometry"]["type"] == "LineString"
+        assert f["properties"]["routes"] == ["13"]
+        assert "direction_id" not in f["properties"]
 
 
-def test_E3c_liffey_style_one_way_pair_emits_multilinestring(tmp_path):
-    """Pipeline integration: Liffey-quay-style one-way pair where
-    the two directions use streets >30 m apart for several km emits
-    a MultiLineString Feature — both legs visible on the map."""
+def test_E3c_liffey_style_one_way_pair_emits_two_linestring_features(tmp_path):
+    """Pipeline integration: a Liffey-quay-style one-way pair (two
+    parallel streets >tolerance apart for several km) emits TWO
+    Feature LineStrings — each direction on its own line — both
+    carrying routes=['13']."""
     d = _write_gtfs(
         tmp_path / "gtfs",
         agency=_AGENCY,
@@ -310,8 +313,6 @@ def test_E3c_liffey_style_one_way_pair_emits_multilinestring(tmp_path):
             {"route_id": "R1", "service_id": "WK", "trip_id": "T1",
              "direction_id": 1, "shape_id": "S1"},
         ]),
-        # Two streets, ~55 m apart, ~6.7 km long — far above 500 m
-        # residual threshold.
         shapes=_shapes_csv({
             "S0": [(-6.30, 53.30000), (-6.20, 53.30000)],
             "S1": [(-6.20, 53.30050), (-6.30, 53.30050)],
@@ -320,15 +321,21 @@ def test_E3c_liffey_style_one_way_pair_emits_multilinestring(tmp_path):
         stops=_stops_csv([]),
     )
     routes, _ = build(d, "2026-05-05")
-    assert len(routes["features"]) == 1
-    assert routes["features"][0]["geometry"]["type"] == "MultiLineString"
+    feats = routes["features"]
+    assert len(feats) == 2
+    for f in feats:
+        assert f["geometry"]["type"] == "LineString"
+        assert f["properties"]["routes"] == ["13"]
+    # Each feature is unambiguously one direction.
+    dirs = sorted(f["properties"]["direction_id"] for f in feats)
+    assert dirs == [0, 1]
 
 
-def test_E4c_each_direction_picks_its_most_frequent_shape_into_merger(tmp_path):
+def test_E4c_each_direction_picks_its_most_frequent_shape(tmp_path):
     """The pipeline picks the most-frequent shape per direction (not
     per route). With dir 0 / dir 1 on parallel streets ~110 m apart,
-    the merger emits MultiLineString. The runner-up dir-0 shape
-    S0_B must NOT appear because S0_A is more frequent for dir 0.
+    segment bundling emits two Features (one per direction). The
+    runner-up dir-0 shape S0_B must NOT appear in either feature.
     """
     d = _write_gtfs(
         tmp_path / "gtfs",
@@ -356,11 +363,10 @@ def test_E4c_each_direction_picks_its_most_frequent_shape_into_merger(tmp_path):
         stops=_stops_csv([]),
     )
     routes, _ = build(d, "2026-05-05")
-    assert len(routes["features"]) == 1
-    f = routes["features"][0]
-    assert f["geometry"]["type"] == "MultiLineString"
+    feats = routes["features"]
+    assert len(feats) == 2
+    lats = {round(c[1], 5) for f in feats for c in f["geometry"]["coordinates"]}
     # S0_B's lat (53.30200) is the runner-up shape — must not appear.
-    lats = {round(c[1], 5) for line in f["geometry"]["coordinates"] for c in line}
     assert 53.30200 not in lats
     # Canonical (S0_A at 53.30100) and the other-direction (S1 at
     # 53.30000) should both appear.
@@ -392,7 +398,7 @@ def test_E5_commuter_agency_7778006_excluded(tmp_path):
         stops=_stops_csv([]),
     )
     routes, _ = build(d, "2026-05-05")
-    shorts = {f["properties"]["route_short_name"] for f in routes["features"]}
+    shorts = {s for f in routes["features"] for s in f["properties"]["routes"]}
     assert shorts == {"13"}
 
 
@@ -729,3 +735,217 @@ def test_S2_feature_colour_matches_category_colour(tmp_path):
     from gtfs_map.category import CATEGORY_COLOURS
     f = _build_with_route(tmp_path, "C1")
     assert f["properties"]["colour"] == CATEGORY_COLOURS["spine"]
+
+
+# --------------------------------------------------------------------------
+# Bundling integration (step 3 of the cross-route bundling work)
+# --------------------------------------------------------------------------
+
+
+def test_bundle_two_lettered_spines_share_routes_property(tmp_path):
+    """Two lettered spine routes (C1, C2) on the same corridor each
+    walk and emit a Feature; both carry routes=[C1, C2] and the same
+    spine colour, so they stack as a single visually-thicker red
+    line at the rendering layer."""
+    d = _write_gtfs(
+        tmp_path / "gtfs",
+        agency=_AGENCY,
+        calendar=_CALENDAR_WEEKDAY,
+        calendar_dates=_CAL_DATES_EMPTY,
+        routes=_routes_csv([
+            {"route_id": "R1", "agency_id": "7778019", "route_short_name": "C1"},
+            {"route_id": "R2", "agency_id": "7778019", "route_short_name": "C2"},
+        ]),
+        trips=_trips_csv([
+            {"route_id": "R1", "service_id": "WK", "trip_id": "T1",
+             "direction_id": 0, "shape_id": "S1"},
+            {"route_id": "R2", "service_id": "WK", "trip_id": "T2",
+             "direction_id": 0, "shape_id": "S1"},  # SAME shape
+        ]),
+        shapes=_shapes_csv({"S1": [(-6.30, 53.30), (-6.20, 53.30)]}),
+        stop_times=_stop_times_csv([]),
+        stops=_stops_csv([]),
+    )
+    routes, _ = build(d, "2026-05-05")
+    feats = routes["features"]
+    assert len(feats) == 2
+    for f in feats:
+        assert f["properties"]["category"] == "spine"
+        assert sorted(f["properties"]["routes"]) == ["C1", "C2"]
+
+
+def test_bundle_two_unrelated_numeric_routes_share_at_category_level(tmp_path):
+    """Routes 13 and 16 on the same corridor are both radial — each
+    walks its own line and emits a Feature carrying routes=[13, 16].
+    Both stacked at the same purple colour render as a single line,
+    even though the routes aren't a deliberate "bundle group"."""
+    d = _write_gtfs(
+        tmp_path / "gtfs",
+        agency=_AGENCY,
+        calendar=_CALENDAR_WEEKDAY,
+        calendar_dates=_CAL_DATES_EMPTY,
+        routes=_routes_csv([
+            {"route_id": "R1", "agency_id": "7778019", "route_short_name": "13"},
+            {"route_id": "R2", "agency_id": "7778019", "route_short_name": "16"},
+        ]),
+        trips=_trips_csv([
+            {"route_id": "R1", "service_id": "WK", "trip_id": "T1",
+             "direction_id": 0, "shape_id": "S1"},
+            {"route_id": "R2", "service_id": "WK", "trip_id": "T2",
+             "direction_id": 0, "shape_id": "S1"},
+        ]),
+        shapes=_shapes_csv({"S1": [(-6.30, 53.30), (-6.20, 53.30)]}),
+        stop_times=_stop_times_csv([]),
+        stops=_stops_csv([]),
+    )
+    routes, _ = build(d, "2026-05-05")
+    feats = routes["features"]
+    assert len(feats) == 2
+    for f in feats:
+        assert f["properties"]["category"] == "radial"
+        assert sorted(f["properties"]["routes"]) == ["13", "16"]
+
+
+def test_bundle_two_far_apart_routes_stay_separate(tmp_path):
+    """Two routes whose shapes are geographically distinct (>100 m
+    apart) emit TWO Features each with a singleton `routes` list."""
+    d = _write_gtfs(
+        tmp_path / "gtfs",
+        agency=_AGENCY,
+        calendar=_CALENDAR_WEEKDAY,
+        calendar_dates=_CAL_DATES_EMPTY,
+        routes=_routes_csv([
+            {"route_id": "R1", "agency_id": "7778019", "route_short_name": "13"},
+            {"route_id": "R2", "agency_id": "7778019", "route_short_name": "16"},
+        ]),
+        trips=_trips_csv([
+            {"route_id": "R1", "service_id": "WK", "trip_id": "T1",
+             "direction_id": 0, "shape_id": "S1"},
+            {"route_id": "R2", "service_id": "WK", "trip_id": "T2",
+             "direction_id": 0, "shape_id": "S2"},
+        ]),
+        shapes=_shapes_csv({
+            "S1": [(-6.30, 53.30), (-6.20, 53.30)],
+            "S2": [(-6.30, 53.40), (-6.20, 53.40)],  # 11 km north
+        }),
+        stop_times=_stop_times_csv([]),
+        stops=_stops_csv([]),
+    )
+    routes, _ = build(d, "2026-05-05")
+    assert len(routes["features"]) == 2
+    shorts = sorted(r for f in routes["features"] for r in f["properties"]["routes"])
+    assert shorts == ["13", "16"]
+    for f in routes["features"]:
+        assert len(f["properties"]["routes"]) == 1
+
+
+def test_bundle_does_not_cross_categories(tmp_path):
+    """A spine route (C1) and an L-route (L25) with IDENTICAL
+    shapes don't bundle because they're in different categories.
+    Bundling is per-category to prevent route_set cascading
+    across category boundaries."""
+    d = _write_gtfs(
+        tmp_path / "gtfs",
+        agency=_AGENCY,
+        calendar=_CALENDAR_WEEKDAY,
+        calendar_dates=_CAL_DATES_EMPTY,
+        routes=_routes_csv([
+            {"route_id": "R1", "agency_id": "7778019", "route_short_name": "C1"},
+            {"route_id": "R2", "agency_id": "7778019", "route_short_name": "L25"},
+        ]),
+        trips=_trips_csv([
+            {"route_id": "R1", "service_id": "WK", "trip_id": "T1",
+             "direction_id": 0, "shape_id": "S1"},
+            {"route_id": "R2", "service_id": "WK", "trip_id": "T2",
+             "direction_id": 0, "shape_id": "S1"},
+        ]),
+        shapes=_shapes_csv({"S1": [(-6.30, 53.30), (-6.20, 53.30)]}),
+        stop_times=_stop_times_csv([]),
+        stops=_stops_csv([]),
+    )
+    routes, _ = build(d, "2026-05-05")
+    assert len(routes["features"]) == 2
+    cats = sorted(f["properties"]["category"] for f in routes["features"])
+    assert cats == ["local", "spine"]
+    # Each feature has just its own route in routes
+    for f in routes["features"]:
+        assert len(f["properties"]["routes"]) == 1
+
+
+def test_bundle_three_lettered_spines_each_walk_carries_all_three(tmp_path):
+    """Three lettered spine routes (C1, C2, C3) on identical shape
+    each walk and emit a Feature; all three carry routes=[C1, C2,
+    C3]. Width at the rendering layer scales with len(routes), so
+    the stacked features render as a single visually-thicker red
+    trunk."""
+    d = _write_gtfs(
+        tmp_path / "gtfs",
+        agency=_AGENCY,
+        calendar=_CALENDAR_WEEKDAY,
+        calendar_dates=_CAL_DATES_EMPTY,
+        routes=_routes_csv([
+            {"route_id": "R1", "agency_id": "7778019", "route_short_name": "C1"},
+            {"route_id": "R2", "agency_id": "7778019", "route_short_name": "C2"},
+            {"route_id": "R3", "agency_id": "7778019", "route_short_name": "C3"},
+        ]),
+        trips=_trips_csv([
+            {"route_id": "R1", "service_id": "WK", "trip_id": "T1",
+             "direction_id": 0, "shape_id": "S1"},
+            {"route_id": "R2", "service_id": "WK", "trip_id": "T2",
+             "direction_id": 0, "shape_id": "S1"},
+            {"route_id": "R3", "service_id": "WK", "trip_id": "T3",
+             "direction_id": 0, "shape_id": "S1"},
+        ]),
+        shapes=_shapes_csv({"S1": [(-6.30, 53.30), (-6.20, 53.30)]}),
+        stop_times=_stop_times_csv([]),
+        stops=_stops_csv([]),
+    )
+    routes, _ = build(d, "2026-05-05")
+    feats = routes["features"]
+    assert len(feats) == 3
+    for f in feats:
+        assert f["properties"]["category"] == "spine"
+        assert sorted(f["properties"]["routes"]) == ["C1", "C2", "C3"]
+
+
+def test_bundle_hf_numeric_with_letter_variant_split_by_category(tmp_path):
+    """Route 39 (HF-promoted to spine, red) and 39A (radial, purple
+    — variants don't inherit HF) share a corridor. Per-category
+    collapse emits TWO Features at that corridor: one spine [39]
+    and one radial [39A]. Each is drawn in its category colour;
+    the front-end's z-order puts spine on top."""
+    from gtfs_map.pipeline import HIGH_FREQUENCY_HOUR
+    # 6 trips at the HF hour for route "39" -> high-frequency.
+    hf_stop_times = [
+        {"trip_id": f"T39_{i}", "stop_id": "X", "stop_sequence": 1,
+         "departure_time": f"{HIGH_FREQUENCY_HOUR:02d}:{i:02d}:00"}
+        for i in range(6)
+    ]
+    trip_rows = [
+        {"route_id": "R1", "service_id": "WK", "trip_id": f"T39_{i}",
+         "direction_id": 0, "shape_id": "S1"}
+        for i in range(6)
+    ] + [
+        {"route_id": "R2", "service_id": "WK", "trip_id": "T39A",
+         "direction_id": 0, "shape_id": "S1"},
+    ]
+    d = _write_gtfs(
+        tmp_path / "gtfs",
+        agency=_AGENCY,
+        calendar=_CALENDAR_WEEKDAY,
+        calendar_dates=_CAL_DATES_EMPTY,
+        routes=_routes_csv([
+            {"route_id": "R1", "agency_id": "7778019", "route_short_name": "39"},
+            {"route_id": "R2", "agency_id": "7778019", "route_short_name": "39A"},
+        ]),
+        trips=_trips_csv(trip_rows),
+        shapes=_shapes_csv({"S1": [(-6.30, 53.30), (-6.20, 53.30)]}),
+        stop_times=_stop_times_csv(hf_stop_times),
+        stops=_stops_csv([]),
+    )
+    routes, _ = build(d, "2026-05-05")
+    feats = routes["features"]
+    assert len(feats) == 2
+    by_cat = {f["properties"]["category"]: f for f in feats}
+    assert by_cat["spine"]["properties"]["routes"] == ["39"]
+    assert by_cat["radial"]["properties"]["routes"] == ["39A"]

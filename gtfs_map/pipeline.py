@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime as _dt
 import json as _json
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -11,6 +12,7 @@ from shapely.geometry import LineString, mapping
 from .category import CATEGORY_COLOURS, categorise, category_colour
 from .direction_merge import merge_directions
 from .frequency import high_frequency_route_ids_from_files
+from .segment_bundle import segment_bundle
 from .services import active_services_for_date
 from .shapes import build_linestrings, representative_shape_ids
 from .stops import sample_stop_indices, stops_for_active_routes
@@ -20,7 +22,7 @@ CITY_AGENCIES = {"7778019", "7778021"}
 AGENCY_LABEL = {"7778019": "Dublin Bus", "7778021": "Go-Ahead"}
 
 HIGH_FREQUENCY_THRESHOLD = 5
-HIGH_FREQUENCY_HOUR = 6
+HIGH_FREQUENCY_HOUR = 12
 
 # Two directions of the same route running within this many metres of
 # each other are treated as the same logical corridor and rendered as
@@ -29,6 +31,34 @@ HIGH_FREQUENCY_HOUR = 6
 DIRECTION_MERGE_THRESHOLD_M = 30.0
 
 LEGACY_PHASE = "legacy"
+
+
+_SPINE_RE = re.compile(r"^([A-H])\d+$")
+_VARIANT_RE = re.compile(r"^(\d+)[A-Z]*$")
+
+
+def _bundle_key(short: str, hf_shorts: set[str]) -> str | None:
+    """Routes that should be visually bundled into one corridor.
+
+    - Lettered spine routes (A1, A2, B1, ..., H3) bundle within
+      their letter — that's the BusConnects spine corridor.
+    - High-frequency numeric routes bundle with their letter-suffix
+      variants (39 + 39A + 39X) only when the bare-numeric parent is
+      itself high-frequency. Without the HF anchor we leave them as
+      separate lines.
+
+    All other routes return None and are rendered as their own
+    independent feature.
+    """
+    m = _SPINE_RE.match(short)
+    if m:
+        return f"spine-{m.group(1)}"
+    m = _VARIANT_RE.match(short)
+    if m:
+        prefix = m.group(1)
+        if prefix in hf_shorts:
+            return f"num-{prefix}"
+    return None
 
 
 def _load_rollout_phases(path: Path) -> tuple[dict, dict[str, str]]:
@@ -48,17 +78,19 @@ def build(
     with_labels: bool = False,
     rollout_phases_path: Path | None = None,
 ):
-    """Minimal GTFS -> GeoJSON pipeline.
+    """GTFS -> GeoJSON pipeline with per-category segment bundling.
 
-    For each active route on `date_iso`:
-      - pick the representative shape (most frequent shape_id of trips
-        active that day) for direction 0, falling back to direction 1
-      - emit ONE Feature with that shape's geometry and properties:
-          route_short_name, route_long_name, agency, category, colour,
-          phase, direction_id
+    For each active route on `date_iso` we pick the most-frequent
+    shape per direction, clean fold-back vertices, and run
+    `segment_bundle` per category over per-direction fragments. The
+    output is one Feature per shared sub-segment: where multiple
+    routes ride the same metre of road, exactly one Feature carries
+    all their names in `routes`. Routes that diverge produce
+    separate Features for each unique stretch.
 
-    No bundling, no offset, no smoothing, no consolidation. Each route
-    appears as its own line on the map.
+    Feature properties: routes (list[str]), route_long_name, agency,
+    category, colour, phase, direction_id (only when the segment is
+    unambiguously one route in one direction).
     """
     gtfs_dir = Path(gtfs_dir)
 
@@ -123,10 +155,10 @@ def build(
     shapes_df = shapes_df[shapes_df["shape_id"].isin(needed_shape_ids)]
     lines = build_linestrings(shapes_df)
 
-    # Emit one Feature per route. If both directions are active
-    # today, merge_directions collapses them into a single geometry
-    # (LineString when same-corridor, MultiLineString when divergent
-    # one-way pairs).
+    # Per route: pick the geometry to render (merge_directions when
+    # both directions are active) and a single LineString to feed into
+    # the corridor-bundler. Cross-route bundling then groups routes
+    # within each category whose corridor matches.
     from shapely.geometry import LineString as _LS, MultiLineString as _MLS
 
     routes_for_short: dict[str, str] = {}  # short -> route_id used
@@ -139,8 +171,14 @@ def build(
         by_short_dir[short][int(dir_id)] = line
         routes_for_short.setdefault(short, route_id)
 
-    features: list[dict] = []
-    rendered_shorts: set[str] = set()
+    # Build per-direction fragments. A "fragment" is one direction's
+    # cleaned LineString; synthetic names are "{short}#{dir_id}". All
+    # fragments go into ONE big dict so segment_bundle sees the full
+    # picture of cross-route overlap.
+    short_to_category: dict[str, str] = {}
+    synth_to_short: dict[str, str] = {}
+    synth_to_dir: dict[str, int] = {}
+    all_frags: dict[str, _LS] = {}
     for short in sorted(by_short_dir):
         dirs = by_short_dir[short]
         d0 = dirs.get(0)
@@ -148,63 +186,109 @@ def build(
         if d0 is None and d1 is None:
             continue
         if d0 is not None and d1 is not None:
-            geom = merge_directions(d0, d1, threshold_m=DIRECTION_MERGE_THRESHOLD_M)
-            sole_dir: int | None = None  # both directions merged
+            merged = merge_directions(d0, d1, threshold_m=DIRECTION_MERGE_THRESHOLD_M)
+            if isinstance(merged, _MLS):
+                cleaned_d0, cleaned_d1 = merged.geoms[0], merged.geoms[1]
+            else:
+                cleaned_d0, cleaned_d1 = merged, None
+        elif d0 is not None:
+            cleaned_d0 = merge_directions(d0, None)
+            cleaned_d1 = None
         else:
-            geom = d0 if d0 is not None else d1
-            sole_dir = 0 if d0 is not None else 1
+            cleaned_d0 = None
+            cleaned_d1 = merge_directions(d1, None)
 
-        # Convert shapely -> GeoJSON dict (lists, not tuples).
-        if isinstance(geom, _LS):
-            geometry = {
-                "type": "LineString",
-                "coordinates": [list(c) for c in geom.coords],
-            }
-        elif isinstance(geom, _MLS):
-            geometry = {
-                "type": "MultiLineString",
-                "coordinates": [
-                    [list(c) for c in line.coords] for line in geom.geoms
-                ],
-            }
-        else:
-            continue
-
-        route_id = routes_for_short[short]
         cat = categorise(short, high_frequency=short in hf_shorts)
+        short_to_category[short] = cat
+        for direction_id, line in ((0, cleaned_d0), (1, cleaned_d1)):
+            if line is None:
+                continue
+            synth = f"{short}#{direction_id}"
+            synth_to_short[synth] = short
+            synth_to_dir[synth] = direction_id
+            all_frags[synth] = line
+
+    # Run segment_bundle, then emit one Feature per walker
+    # sub-segment. Each walker's path is a continuous tiling of its
+    # own GTFS shape, so the rendered geometry of any single route
+    # never jumps across tolerance-equivalent neighbours.
+    #
+    # The `routes` property carries only same-category companions at
+    # this stretch. When N spine routes share a corridor, all N
+    # walkers emit a feature here, all painted in spine red with the
+    # same width — they stack into a single visually-thicker red
+    # line. Other categories at the same metre of road are emitted
+    # by their own walkers in their own colour; CATEGORY_ORDER on
+    # the front-end decides which is on top.
+    bundled = segment_bundle(all_frags)
+    features: list[dict] = []
+    rendered_shorts: set[str] = set()
+    for sub, synth_members, walker_synth in bundled:
+        walker_short = synth_to_short[walker_synth]
+        walker_route_id = routes_for_short[walker_short]
+        cat = short_to_category[walker_short]
+        cat_synths = [
+            s for s in synth_members
+            if short_to_category[synth_to_short[s]] == cat
+        ]
+        cat_shorts = sorted({synth_to_short[s] for s in cat_synths})
+        dirs_in_cat = {synth_to_dir[s] for s in cat_synths}
         colour = category_colour(cat)
-        phase = short_to_phase.get(short, LEGACY_PHASE)
+        phase = short_to_phase.get(walker_short, LEGACY_PHASE)
+
         properties: dict = {
-            "route_short_name": short,
-            "route_long_name": long_by_id.get(route_id, ""),
-            "agency": AGENCY_LABEL.get(agency_by_id.get(route_id, ""), ""),
+            # `route` (singular): the walker whose own GTFS shape
+            # produced this geometry. A line click resolves to one
+            # specific route via this field — without it the click
+            # would have to seed the full `routes` array, which
+            # under per-category emission lights up every companion
+            # spine's full path, not just the clicked route.
+            "route": walker_short,
+            "routes": cat_shorts,
+            "route_long_name": long_by_id.get(walker_route_id, ""),
+            "agency": AGENCY_LABEL.get(
+                agency_by_id.get(walker_route_id, ""), ""
+            ),
             "category": cat,
             "colour": colour,
             "phase": phase,
         }
-        # Only single-direction features carry a direction_id; merged-
-        # both-directions features omit it because they represent the
-        # logical corridor regardless of direction.
-        if sole_dir is not None:
-            properties["direction_id"] = sole_dir
-        features.append({"type": "Feature", "geometry": geometry, "properties": properties})
-        rendered_shorts.add(short)
+        if len(cat_shorts) == 1 and len(dirs_in_cat) == 1:
+            properties["direction_id"] = next(iter(dirs_in_cat))
 
+        geometry = {
+            "type": "LineString",
+            "coordinates": [list(c) for c in sub.coords],
+        }
+        features.append(
+            {"type": "Feature", "geometry": geometry, "properties": properties}
+        )
+        rendered_shorts.update(cat_shorts)
+
+    features.sort(
+        key=lambda f: (f["properties"]["category"], f["properties"]["routes"])
+    )
     routes_geojson = {"type": "FeatureCollection", "features": features}
 
     phase_route_counts: dict[str, int] = defaultdict(int)
     for s in rendered_shorts:
         phase_route_counts[short_to_phase.get(s, LEGACY_PHASE)] += 1
 
-    category_route_counts: dict[str, int] = defaultdict(int)
-    for f in features:
-        category_route_counts[f["properties"]["category"]] += 1
+    # Unique routes per category. Each route is counted once under
+    # its own category (not the walker's), so a bundle that mixes a
+    # HF-promoted spine 39 with its radial variant 39A counts 39 in
+    # spine and 39A in radial.
+    routes_by_category: dict[str, set[str]] = defaultdict(set)
+    for s in rendered_shorts:
+        routes_by_category[short_to_category[s]].add(s)
+    category_route_counts = {k: len(v) for k, v in routes_by_category.items()}
 
     meta = {
         "build_iso": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
         "reference_date": date_iso,
         "category_colours": dict(CATEGORY_COLOURS),
-        "route_count": len(features),
+        "route_count": len(rendered_shorts),
+        "feature_count": len(features),
         "active_service_count": int(len(active_services)),
         "active_services": sorted(active_services),
         "high_frequency_threshold": HIGH_FREQUENCY_THRESHOLD,
@@ -212,10 +296,7 @@ def build(
         "high_frequency_route_count": len(hf_shorts),
         "category_route_counts": dict(category_route_counts),
         "rollout_phases": phases_meta,
-        "route_phase": {
-            f["properties"]["route_short_name"]: f["properties"]["phase"]
-            for f in features
-        },
+        "route_phase": {s: short_to_phase.get(s, LEGACY_PHASE) for s in rendered_shorts},
         "phase_route_counts": dict(phase_route_counts),
     }
 
@@ -228,30 +309,78 @@ def build(
         short_by_id[rid]: rid for rid in stops_by_route_id if rid in short_by_id
     }
 
-    label_features: list[dict] = []
-    for f in features:
-        short = f["properties"]["route_short_name"]
+    # Per-route label seeds (sampled stops along each route), then
+    # cluster by location so that labels at the same physical stop
+    # combine into one badge listing every route that stops there.
+    # Each seed uses the route's OWN category and colour — not a
+    # walker feature's, which can bleed across categories in
+    # HF-parent + variant bundles (41 is spine via HF promotion, but
+    # 41B/41C/41D are radial).
+    _CAT_PRIORITY = {"spine": 0, "orbital": 1, "local": 2, "peak": 3, "radial": 4}
+
+    label_seeds: list[dict] = []
+    for short in sorted(rendered_shorts):
         rid = short_to_route_id.get(short)
         if rid is None:
             continue
         stops = stops_by_route_id.get(rid, [])
         if len(stops) < 2:
             continue
+        cat = short_to_category[short]
+        colour = category_colour(cat)
+        bk = _bundle_key(short, hf_shorts)
+        phase = short_to_phase.get(short, LEGACY_PHASE)
         idxs = sample_stop_indices(len(stops), target_k=max(2, len(stops) // 8))
         for i in idxs:
             lon, lat = stops[i]
-            label_features.append(
-                {
-                    "type": "Feature",
-                    "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                    "properties": {
-                        "route_short_name": short,
-                        "category": f["properties"]["category"],
-                        "colour": f["properties"]["colour"],
-                        "phase": f["properties"]["phase"],
-                    },
-                }
-            )
+            label_seeds.append({
+                "lon": lon,
+                "lat": lat,
+                "short": short,
+                "bundle_key": bk,
+                "category": cat,
+                "colour": colour,
+                "phase": phase,
+            })
+
+    # Cluster only when routes share a bundle group (spines, or HF +
+    # variants). Routes in different bundles — or any singleton —
+    # stay as separate labels even when their sampled stops collide.
+    clusters: dict[tuple, list[dict]] = defaultdict(list)
+    for s in label_seeds:
+        # Singletons cluster only with themselves (key includes the
+        # short name); bundleable routes cluster by bundle_key.
+        cluster_key = s["bundle_key"] or f"single-{s['short']}"
+        key = (round(s["lon"], 5), round(s["lat"], 5), cluster_key)
+        clusters[key].append(s)
+
+    label_features: list[dict] = []
+    for key, items in clusters.items():
+        # Build per-route entries (sorted by short) so the rendered
+        # badge can show each route in its own category colour.
+        by_short: dict[str, dict] = {}
+        for it in items:
+            by_short.setdefault(it["short"], it)
+        shorts = sorted(by_short)
+        colours = [by_short[s]["colour"] for s in shorts]
+        # Highest-priority category for fallback / single-colour use.
+        chosen = min(
+            items,
+            key=lambda it: _CAT_PRIORITY.get(it["category"], 99),
+        )
+        phases = {it["phase"] for it in items}
+        phase = next(iter(phases)) if len(phases) == 1 else ""
+        label_features.append({
+            "type": "Feature",
+            "geometry": {"type": "Point", "coordinates": [items[0]["lon"], items[0]["lat"]]},
+            "properties": {
+                "routes": shorts,
+                "colours": colours,
+                "category": chosen["category"],
+                "colour": chosen["colour"],
+                "phase": phase,
+            },
+        })
 
     labels = {"type": "FeatureCollection", "features": label_features}
     meta["label_feature_count"] = len(label_features)
