@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 
 from gtfs_map.pipeline import build
+from gtfs_map.rail import build_rail_geojson
 
 
 DEFAULT_DATE = "2026-05-05"
@@ -34,6 +35,9 @@ def main() -> None:
     if labels is not None:
         (out_dir / "labels.geojson").write_text(json.dumps(labels))
 
+    rail = build_rail_geojson(Path(args.gtfs), args.date)
+    (out_dir / "rail.geojson").write_text(json.dumps(rail))
+
     # Old artifacts from the bundled-pipeline era — clean up so the
     # viewer doesn't accidentally read stale shapes.
     for old in ("segments.geojson",):
@@ -49,7 +53,8 @@ def main() -> None:
     print(f"Routes per category:      {meta['category_route_counts']}")
     if labels is not None:
         print(f"Label features:           {meta['label_feature_count']}")
-    print(f"Wrote: {out_dir}/routes.geojson, meta.json"
+    print(f"Rail/LUAS features:       {len(rail['features'])}")
+    print(f"Wrote: {out_dir}/routes.geojson, meta.json, rail.geojson"
           + (", labels.geojson" if labels is not None else ""))
 
 

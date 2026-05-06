@@ -92,6 +92,12 @@
       font-size: 11px;
       margin-left: 6px;
     }
+    .panel .row-note {
+      color: #888;
+      font-size: 10px;
+      line-height: 1.3;
+      margin: -2px 0 6px 24px;
+    }
     .panel .check {
       width: 14px;
       height: 14px;
@@ -267,17 +273,100 @@
     document.getElementById('clearHighlight').addEventListener('click', clearHighlight);
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') clearHighlight(); });
 
+    function compareRouteShort(a, b) {
+      // Spines (single letter A-H + digits) first, sorted by letter
+      // then number. Then numeric routes ascending — bare numbers
+      // before their letter-suffix variants (14, 14A, 14C). Then
+      // letter-prefixed orbitals/locals/peaks in lex order.
+      const spineA = a.match(/^([A-H])(\d+)$/);
+      const spineB = b.match(/^([A-H])(\d+)$/);
+      if (spineA && !spineB) return -1;
+      if (!spineA && spineB) return 1;
+      if (spineA && spineB) {
+        if (spineA[1] !== spineB[1]) return spineA[1] < spineB[1] ? -1 : 1;
+        return parseInt(spineA[2], 10) - parseInt(spineB[2], 10);
+      }
+      const numA = a.match(/^(\d+)([A-Z]*)$/);
+      const numB = b.match(/^(\d+)([A-Z]*)$/);
+      if (numA && !numB) return -1;
+      if (!numA && numB) return 1;
+      if (numA && numB) {
+        const di = parseInt(numA[1], 10) - parseInt(numB[1], 10);
+        if (di !== 0) return di;
+        return numA[2] < numB[2] ? -1 : numA[2] > numB[2] ? 1 : 0;
+      }
+      return a < b ? -1 : a > b ? 1 : 0;
+    }
+
+    function formatRouteList(routes) {
+      // When phase rows are selected, narrow the tooltip to just
+      // the routes in that phase — hovering a shared corridor with
+      // phase 1 selected should show only the H spines, not every
+      // HF radial that happens to share the road.
+      const arr = (routes || []).slice();
+      const selected = window._selectedPhases;
+      const routePhase = window._routePhase || {};
+      let filtered = arr;
+      if (selected && selected.size) {
+        filtered = arr.filter(r => selected.has(routePhase[r] || 'legacy'));
+        // If the hovered feature carries nothing from the selection,
+        // fall back to the full list so the tooltip remains useful.
+        if (!filtered.length) filtered = arr;
+      }
+      return filtered.sort(compareRouteShort).join(', ');
+    }
+
     function tooltipFor(feature) {
       const p = feature.properties;
-      const names = (p.routes || []).join(', ');
+      const names = formatRouteList(p.routes);
       return `<b>${names}</b><br>${p.route_long_name || ''}<br><i>${p.agency || ''}</i>`;
+    }
+
+    function railColor(feature) {
+      // LUAS Green/Red lines pick up their official line colour;
+      // Iarnród Éireann lines all share orange. Rendered as
+      // colour-and-white stripes (a white solid base with a
+      // dashed coloured overlay on top).
+      const p = feature.properties;
+      if (p.mode === 'luas') {
+        if (p.short === 'Green') return '#00a651';
+        if (p.short === 'Red') return '#e2231a';
+        return '#888';
+      }
+      return '#ed7611';
     }
 
     Promise.all([
       fetch('output/routes.geojson').then(r => r.json()),
       fetch('output/meta.json').then(r => r.json()),
       fetch('output/labels.geojson').then(r => r.ok ? r.json() : { features: [] }).catch(() => ({ features: [] })),
-    ]).then(([routes, meta, labels]) => {
+      fetch('output/rail.geojson').then(r => r.ok ? r.json() : { features: [] }).catch(() => ({ features: [] })),
+    ]).then(([routes, meta, labels, rail]) => {
+      // Render rail and LUAS as two stacked layers per feature: a
+      // wider solid white base, then a coloured dashed overlay.
+      // The dash gaps reveal the white underneath, producing the
+      // alternating colour-and-white stripe convention used on
+      // most transit maps. No tooltips, no click handlers —
+      // purely background context for orientation.
+      const railWhiteBase = L.geoJSON(rail, {
+        style: { color: '#ffffff', weight: 5, opacity: 0.95 },
+        interactive: false,
+        renderer,
+      });
+      railWhiteBase.addTo(map);
+      const railColoured = L.geoJSON(rail, {
+        style: f => ({
+          color: railColor(f),
+          weight: 3,
+          opacity: 1,
+          dashArray: '8,8',
+          lineCap: 'butt',
+        }),
+        interactive: false,
+        renderer,
+      });
+      railColoured.addTo(map);
+
       const groupsByCategory = {};
       for (const cat of CATEGORY_ORDER) groupsByCategory[cat] = L.layerGroup();
 
@@ -285,7 +374,7 @@
         const base = baseStyle(f);
         const layer = L.geoJSON(f, { style: () => base, renderer });
         layer.eachLayer(l => {
-          l.bindTooltip(tooltipFor(l.feature), { className: 'route-tooltip', sticky: true });
+          l.bindTooltip(() => tooltipFor(l.feature), { className: 'route-tooltip', sticky: true });
           l.on('click', (ev) => {
             L.DomEvent.stopPropagation(ev);
             // Clicking a shared segment selects every route that
@@ -375,10 +464,14 @@
       const hour = meta.high_frequency_hour;
       const hourLabel = hour === 0 ? 'midnight' : hour === 12 ? 'noon' : hour < 12 ? `${hour} am` : `${hour - 12} pm`;
       const hfCount = meta.high_frequency_route_count || 0;
+      const hfThreshold = meta.high_frequency_threshold;
 
       const visibleCategories = new Set(LEGEND_ORDER);
       const selectedPhases = new Set();
       window._selectedPhases = selectedPhases;
+      // Expose the route-to-phase map so the tooltip helper can
+      // narrow its route list to the active phase selection.
+      window._routePhase = routePhase;
 
       function applyPhaseSelection() {
         if (selectedPhases.size === 0) {
@@ -401,13 +494,16 @@
         const catRows = LEGEND_ORDER.map(cat => {
           const c = meta.category_colours[cat];
           const count = (meta.category_route_counts || {})[cat] || 0;
+          const note = cat === 'spine'
+            ? `<div class="row-note">Routes with more than ${hfThreshold} trips per hour at ${hourLabel} are high-frequency.</div>`
+            : '';
           return `<div class="row" data-cat="${cat}">
             <div class="row-left">
               <span class="swatch" style="background:${c}"></span>
               <span class="label-text">${CATEGORY_LABELS[cat]}</span>
             </div>
             <span class="row-count">${count}</span>
-          </div>`;
+          </div>${note}`;
         }).join('');
 
         let phaseRows = '';
@@ -436,7 +532,7 @@
 
         div.innerHTML = `
           <h3>Dublin city bus network</h3>
-          <div class="panel-sub">${meta.reference_date} · ${meta.route_count} routes · ${hfCount} red by ${hourLabel}</div>
+          <div class="panel-sub">${meta.reference_date} · ${meta.route_count} routes</div>
           <div class="section">
             <div class="section-title">Route categories</div>
             ${catRows}
