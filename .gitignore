@@ -1,6 +1,4 @@
 data/
-output/*.geojson
-output/*.json
 __pycache__/
 *.pyc
 .venv/
@@ -8,4 +6,6 @@ __pycache__/
 .vscode/
 .pytest_cache/
 .playwright-cli/
+.claude/
 *.png
+rail-build.log
