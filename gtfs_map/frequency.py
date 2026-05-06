@@ -8,19 +8,25 @@ import pandas as pd
 def high_frequency_route_ids(
     stop_times: pd.DataFrame,
     trips: pd.DataFrame,
-    threshold: int = 5,
+    threshold: float = 4,
     hour: int = 8,
     active_trip_ids: set[str] | None = None,
 ) -> set[str]:
-    """Return route_ids whose first-stop departure falls within the given
-    hour window at least `threshold` times across `active_trip_ids`.
+    """Return route_ids whose busiest direction in the given hour
+    window has at least `threshold` trip starts.
 
-    Counts the start of each trip (stop_sequence == 1), filtered to the
-    hour window [HH:00:00, HH+1:00:00). Joins those starts to trips →
-    routes, then groups by route_id.
+    Counts trip starts (stop_sequence == 1, departure in
+    [HH:00:00, HH+1:00:00)) bucketed by (route_id, direction_id),
+    then takes the max across directions per route. A route is
+    high-frequency when any one direction clears the bar — so an
+    asymmetric peak-direction service still qualifies on the busy
+    side, while a low-frequency route doesn't.
 
-    `active_trip_ids` lets the caller restrict the count to today's
-    trips; if None, every trip in the input is considered active.
+    If the trips frame has no `direction_id` column, all trips are
+    treated as a single direction.
+
+    `active_trip_ids` restricts the count to today's trips; if None,
+    every trip in the input is considered active.
     """
     starts = stop_times[stop_times["stop_sequence"] == 1].copy()
     if active_trip_ids is not None:
@@ -35,45 +41,66 @@ def high_frequency_route_ids(
     if starts.empty:
         return set()
 
-    joined = starts.merge(trips[["trip_id", "route_id"]], on="trip_id")
-    counts = joined.groupby("route_id").size()
-    return set(counts.index[counts >= threshold])
+    cols = ["trip_id", "route_id"]
+    if "direction_id" in trips.columns:
+        cols.append("direction_id")
+    joined = starts.merge(trips[cols], on="trip_id")
+    if "direction_id" not in joined.columns:
+        joined["direction_id"] = 0
+
+    per_dir = joined.groupby(["route_id", "direction_id"]).size()
+    max_per_route = per_dir.groupby(level="route_id").max()
+    return set(max_per_route.index[max_per_route >= threshold])
 
 
 def high_frequency_route_ids_from_files(
     gtfs_dir: Path,
     active_trip_ids: set[str],
-    threshold: int = 5,
+    threshold: float = 4,
     hour: int = 8,
     chunksize: int = 500_000,
 ) -> set[str]:
     """Same as `high_frequency_route_ids` but streams stop_times.txt in
-    chunks so the 300 MB file doesn't blow up memory."""
+    chunks so the 300 MB file doesn't blow up memory.
+
+    Counts per (route_id, direction_id), then keeps routes whose
+    busiest direction meets `threshold`.
+    """
     gtfs_dir = Path(gtfs_dir)
     trips = pd.read_csv(
         gtfs_dir / "trips.txt",
-        usecols=["trip_id", "route_id"],
+        usecols=["trip_id", "route_id", "direction_id"],
         dtype={"trip_id": str, "route_id": str},
     )
+    trips["direction_id"] = trips["direction_id"].fillna(0).astype(int)
     trips = trips[trips["trip_id"].isin(active_trip_ids)]
 
     lo = f"{hour:02d}:00:00"
     hi = f"{hour + 1:02d}:00:00"
 
-    counts: dict[str, int] = {}
+    counts: dict[tuple[str, int], int] = {}
     reader = pd.read_csv(
         gtfs_dir / "stop_times.txt",
         usecols=["trip_id", "departure_time", "stop_sequence"],
         dtype={"trip_id": str, "departure_time": str, "stop_sequence": int},
         chunksize=chunksize,
     )
-    trip_to_route = dict(zip(trips["trip_id"], trips["route_id"]))
+    trip_to_rd = {
+        tid: (rid, did)
+        for tid, rid, did in zip(
+            trips["trip_id"], trips["route_id"], trips["direction_id"]
+        )
+    }
     for chunk in reader:
         starts = chunk[chunk["stop_sequence"] == 1]
-        starts = starts[starts["trip_id"].isin(trip_to_route)]
+        starts = starts[starts["trip_id"].isin(trip_to_rd)]
         starts = starts[(starts["departure_time"] >= lo) & (starts["departure_time"] < hi)]
         for tid in starts["trip_id"]:
-            rid = trip_to_route[tid]
-            counts[rid] = counts.get(rid, 0) + 1
+            key = trip_to_rd[tid]
+            counts[key] = counts.get(key, 0) + 1
 
-    return {rid for rid, n in counts.items() if n >= threshold}
+    max_per_route: dict[str, int] = {}
+    for (rid, _did), n in counts.items():
+        if n > max_per_route.get(rid, 0):
+            max_per_route[rid] = n
+    return {rid for rid, n in max_per_route.items() if n >= threshold}

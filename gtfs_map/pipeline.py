@@ -7,6 +7,7 @@ from collections import defaultdict
 from pathlib import Path
 
 import pandas as pd
+import pyproj
 from shapely.geometry import LineString, mapping
 
 from .category import CATEGORY_COLOURS, categorise, category_colour
@@ -21,7 +22,7 @@ from .stops import sample_stop_indices, stops_for_active_routes
 CITY_AGENCIES = {"7778019", "7778021"}
 AGENCY_LABEL = {"7778019": "Dublin Bus", "7778021": "Go-Ahead"}
 
-HIGH_FREQUENCY_THRESHOLD = 5
+HIGH_FREQUENCY_THRESHOLD = 4
 HIGH_FREQUENCY_HOUR = 12
 
 # Two directions of the same route running within this many metres of
@@ -31,6 +32,49 @@ HIGH_FREQUENCY_HOUR = 12
 DIRECTION_MERGE_THRESHOLD_M = 30.0
 
 LEGACY_PHASE = "legacy"
+
+# Inter-category perpendicular offset. With per-walker emission,
+# same-category routes already collapse onto one rendered line via
+# stacking — but cross-category routes sharing a metre of road also
+# stack at identical coordinates, so only the top category is
+# visible. Offsetting each category into its own slot lets all
+# colours read at once. Max five categories means at most ±2 slots,
+# capping fan-out at 2 × OFFSET_SPACING_M from the centerline.
+OFFSET_SPACING_M = 6.0
+_CATEGORY_OFFSET_ORDER = ("spine", "orbital", "radial", "peak", "local")
+
+
+_OFFSET_TO_ITM = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:2157", always_xy=True)
+_OFFSET_TO_WGS = pyproj.Transformer.from_crs("EPSG:2157", "EPSG:4326", always_xy=True)
+
+
+def _offset_line(line_wgs: LineString, offset_m: float) -> LineString:
+    """Perpendicular-offset a WGS LineString by `offset_m` metres.
+
+    Projects to ITM for the offset (so the distance is in real
+    metres regardless of latitude), then projects back. Sign
+    convention follows Shapely: positive offsets to the left of
+    the line direction, negative to the right.
+    """
+    if offset_m == 0 or len(line_wgs.coords) < 2:
+        return line_wgs
+    coords_itm = [_OFFSET_TO_ITM.transform(x, y) for x, y in line_wgs.coords]
+    line_itm = LineString(coords_itm)
+    if line_itm.length < 1.0:
+        return line_wgs
+    try:
+        offset_itm = line_itm.offset_curve(offset_m)
+    except Exception:
+        return line_wgs
+    if offset_itm.is_empty:
+        return line_wgs
+    if offset_itm.geom_type == "MultiLineString":
+        # offset_curve can split at sharp bends; keep the longest
+        # piece so the rendered route stays mostly continuous.
+        offset_itm = max(offset_itm.geoms, key=lambda g: g.length)
+    if not isinstance(offset_itm, LineString):
+        return line_wgs
+    return LineString([_OFFSET_TO_WGS.transform(x, y) for x, y in offset_itm.coords])
 
 
 _SPINE_RE = re.compile(r"^([A-H])\d+$")
@@ -235,6 +279,21 @@ def build(
         dirs_in_cat = {synth_to_dir[s] for s in cat_synths}
         colour = category_colour(cat)
         phase = short_to_phase.get(walker_short, LEGACY_PHASE)
+
+        # Slot this segment into a perpendicular offset based on
+        # which categories actually share this stretch. With only
+        # one category present the slot is 0 (no offset). With more,
+        # slots are centered on 0 so the bundle's apparent centerline
+        # stays close to the underlying road. Order is taken from
+        # _CATEGORY_OFFSET_ORDER for stability.
+        cats_here = sorted(
+            {short_to_category[synth_to_short[s]] for s in synth_members},
+            key=lambda c: _CATEGORY_OFFSET_ORDER.index(c),
+        )
+        n_cats = len(cats_here)
+        slot = cats_here.index(cat) - (n_cats - 1) / 2
+        if slot != 0:
+            sub = _offset_line(sub, slot * OFFSET_SPACING_M)
 
         properties: dict = {
             # `route` (singular): the walker whose own GTFS shape

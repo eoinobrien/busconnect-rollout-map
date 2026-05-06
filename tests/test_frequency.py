@@ -82,6 +82,47 @@ def test_only_8am_window_counts_not_other_hours():
     assert "EARLY" not in hf
 
 
+def test_one_sided_service_qualifies_via_busy_direction():
+    """A peak-direction service with 5 trips outbound at noon and
+    0 inbound is HF — the busy direction clears the bar even when
+    the other side is empty. A real frequent corridor on at least
+    one of its two directions still counts."""
+    stop_times = _stop_times([
+        ("t1", "12:00:00", "12:00:00", 1),
+        ("t2", "12:10:00", "12:10:00", 1),
+        ("t3", "12:20:00", "12:20:00", 1),
+        ("t4", "12:35:00", "12:35:00", 1),
+        ("t5", "12:50:00", "12:50:00", 1),
+    ])
+    trips = pd.DataFrame(
+        [(f"t{i}", "PEAK", 0) for i in range(1, 6)],
+        columns=["trip_id", "route_id", "direction_id"],
+    )
+    hf = high_frequency_route_ids(stop_times, trips, threshold=4, hour=12)
+    assert "PEAK" in hf
+
+
+def test_below_threshold_in_every_direction_is_not_high_frequency():
+    """3 outbound + 3 inbound — neither direction reaches the bar,
+    so not HF, even though the combined total (6) would have
+    qualified under the old combined-count rule."""
+    stop_times = _stop_times([
+        ("t1", "12:00:00", "12:00:00", 1),
+        ("t2", "12:20:00", "12:20:00", 1),
+        ("t3", "12:40:00", "12:40:00", 1),
+        ("t4", "12:05:00", "12:05:00", 1),
+        ("t5", "12:25:00", "12:25:00", 1),
+        ("t6", "12:45:00", "12:45:00", 1),
+    ])
+    trips = pd.DataFrame(
+        [(f"t{i}", "LOWBOTH", 0) for i in range(1, 4)]
+        + [(f"t{i}", "LOWBOTH", 1) for i in range(4, 7)],
+        columns=["trip_id", "route_id", "direction_id"],
+    )
+    hf = high_frequency_route_ids(stop_times, trips, threshold=4, hour=12)
+    assert "LOWBOTH" not in hf
+
+
 def test_uses_only_active_trips_when_provided():
     stop_times = _stop_times([
         ("t1", "08:00:00", "08:00:00", 1),
