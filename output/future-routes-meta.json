@@ -2,9 +2,10 @@
   "source_pdf": "data\\pdf\\big-picture-2025-10-02.pdf",
   "drawings_total": 73894,
   "candidate_paths": 412,
+  "candidate_paths_after_inset_filter": 246,
   "shield_spans": 1345,
-  "distinct_routes": 137,
-  "paths_with_routes": 290,
+  "distinct_routes": 129,
+  "paths_with_routes": 192,
   "georef_residuals_m": {
     "BULL": 811.2,
     "BUSHY": 491.2,

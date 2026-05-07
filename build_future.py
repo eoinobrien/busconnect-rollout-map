@@ -23,6 +23,7 @@ def main() -> None:
     print(f"Source PDF:               {meta['source_pdf']}")
     print(f"Total polylines:          {meta['drawings_total']}")
     print(f"Candidate route paths:    {meta['candidate_paths']}")
+    print(f"  after inset filter:     {meta['candidate_paths_after_inset_filter']}")
     print(f"Route shield labels:      {meta['shield_spans']}")
     print(f"Distinct routes matched:  {meta['distinct_routes']}")
     print(f"Paths with route_id:      {meta['paths_with_routes']}")
