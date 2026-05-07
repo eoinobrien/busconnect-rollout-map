@@ -353,7 +353,6 @@
         interactive: false,
         renderer,
       });
-      railWhiteBase.addTo(map);
       const railColoured = L.geoJSON(rail, {
         style: f => ({
           color: railColor(f),
@@ -365,7 +364,10 @@
         interactive: false,
         renderer,
       });
-      railColoured.addTo(map);
+      // railWhiteBase + railColoured are added *after* the bus
+      // layers below so rail stripes stay visible where buses
+      // (e.g. the 102 through Sutton↔Howth Junction) would
+      // otherwise paint over the DART spur.
 
       const groupsByCategory = {};
       for (const cat of CATEGORY_ORDER) groupsByCategory[cat] = L.layerGroup();
@@ -394,6 +396,13 @@
 
       // Add categories in render order: radial first (back), spine last (front).
       for (const cat of CATEGORY_ORDER) groupsByCategory[cat].addTo(map);
+
+      // Rail/LUAS goes last so stripes sit on top of all bus
+      // categories — bus colours show through the dash gaps,
+      // but the orange/red/green DART/LUAS stripes never get
+      // hidden by a bus that happens to share the road.
+      railWhiteBase.addTo(map);
+      railColoured.addTo(map);
 
       // Route-name labels along each route. Hide when zoomed out
       // to avoid clutter; show as small coloured pills at z >= 13.
