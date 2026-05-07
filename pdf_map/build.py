@@ -48,7 +48,11 @@ from gtfs_map.colour import SPINE_COLOURS, route_colour
 from .extract import extract_paths, extract_text_spans
 from .georef import Affine, fit_from_spans
 from .inset import reject_inset_paths
-from .match import associate_shields_with_paths, find_route_shields
+from .match import (
+    associate_shields_with_paths,
+    find_route_shields,
+)
+from .visibility import reject_hidden_paths
 from .spine import route_line_paths
 
 
@@ -101,6 +105,7 @@ def build_future_routes(
 
     candidates = route_line_paths(paths)
     candidates_main = reject_inset_paths(candidates)
+    candidates_main = reject_hidden_paths(candidates_main, pdf_path)
     shields = find_route_shields(spans)
     by_path = associate_shields_with_paths(candidates_main, shields)
 

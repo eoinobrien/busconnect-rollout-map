@@ -123,3 +123,5 @@ def associate_shields_with_paths(
             if d <= max_dist_pt:
                 by_path[pi].add(route_id)
     return dict(by_path)
+
+
