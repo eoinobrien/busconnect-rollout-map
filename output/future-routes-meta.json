@@ -1,0 +1,24 @@
+{
+  "source_pdf": "data\\pdf\\big-picture-2025-10-02.pdf",
+  "drawings_total": 73894,
+  "candidate_paths": 412,
+  "shield_spans": 1345,
+  "distinct_routes": 137,
+  "paths_with_routes": 290,
+  "georef_residuals_m": {
+    "BULL": 811.2,
+    "BUSHY": 491.2,
+    "CORKAGH": 834.6,
+    "DARNDALE": 441.0,
+    "FATHER": 425.4,
+    "GLASNEVIN": 593.4,
+    "MARLAY": 312.6,
+    "PHOENIX": 160.2,
+    "SANTRY": 1102.9,
+    "ST. ANNE": 288.1,
+    "TOLKA VALLEY PARK": 633.6,
+    "TYMON PARK": 936.1,
+    "WAR": 1683.5,
+    "WATERSTOWN": 406.4
+  }
+}
