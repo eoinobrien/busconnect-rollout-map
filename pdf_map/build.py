@@ -40,6 +40,8 @@ from __future__ import annotations
 import json
 from pathlib import Path as _FsPath
 
+from shapely.geometry import LineString
+
 from gtfs_map.category import categorise, category_colour
 from gtfs_map.colour import SPINE_COLOURS, route_colour
 
@@ -48,6 +50,16 @@ from .georef import Affine, fit_from_spans
 from .inset import reject_inset_paths
 from .match import associate_shields_with_paths, find_route_shields
 from .spine import route_line_paths
+
+
+# Coordinate precision and Douglas-Peucker tolerance for the
+# emitted GeoJSON. The PDF source is schematic - bezier curves get
+# sampled 16 times each so a raw extract has ~1100 points per route.
+# 0.00005 degrees ~ 5.5m at Dublin's latitude, well below the schematic
+# error floor (median ~600m) and lets us drop the file under 1MB so
+# geojson.io / mapshaper render it smoothly.
+_SIMPLIFY_TOLERANCE_DEG = 0.00005
+_COORD_PRECISION = 6
 
 
 def _hex_of_rgb(rgb: tuple[float, float, float] | None) -> str | None:
@@ -94,9 +106,18 @@ def build_future_routes(
 
     features: list[dict] = []
     for pi, path in enumerate(candidates_main):
-        coords = [list(transform.apply(x, y)) for x, y in path.points]
-        if len(coords) < 2:
+        raw_coords = [transform.apply(x, y) for x, y in path.points]
+        if len(raw_coords) < 2:
             continue
+        # Douglas-Peucker via shapely, then round to 6 decimals
+        # (~11cm at this latitude) for compact output.
+        line = LineString(raw_coords).simplify(_SIMPLIFY_TOLERANCE_DEG, preserve_topology=False)
+        if line.is_empty or len(line.coords) < 2:
+            continue
+        coords = [
+            [round(x, _COORD_PRECISION), round(y, _COORD_PRECISION)]
+            for x, y in line.coords
+        ]
         route_ids = sorted(by_path.get(pi, set()))
         primary = route_ids[0] if route_ids else None
         if primary is not None:
