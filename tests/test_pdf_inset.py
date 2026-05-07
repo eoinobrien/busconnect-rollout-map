@@ -25,16 +25,23 @@ class TestIsInsideInset:
         assert is_inside_inset(_path(1000, 600))
 
     def test_outside_to_left(self):
-        # Well left of the strip (main map territory).
-        assert not is_inside_inset(_path(700, 400))
+        # Top-left main map territory (above the bottom inset's y range).
+        assert not is_inside_inset(_path(500, 400))
+
+    def test_inside_bottom_center_bray_inset(self):
+        # Bray detail panel at (650, 519)-(953, 800).
+        assert is_inside_inset(_path(800, 650))
 
     def test_main_map_howth_position_excluded(self):
         # Howth's main-map PDF position is around (855, 270) -
         # just inside x=875, so safe.
         assert not is_inside_inset(_path(855, 270))
 
-    def test_killiney_main_map_position_excluded(self):
-        assert not is_inside_inset(_path(782, 581))
+    def test_killiney_in_bray_inset_now_excluded(self):
+        # The schematic Killiney area at (782, 581) sits inside the
+        # bottom-center Bray detail inset, so it gets filtered out -
+        # which is what we want, since that's the duplicate render.
+        assert is_inside_inset(_path(782, 581))
 
     def test_killiney_inset_position_included(self):
         # Inset Killiney is around (1033, 491).
@@ -43,10 +50,11 @@ class TestIsInsideInset:
 
 def test_reject_filters_only_inset_paths():
     paths = [
-        _path(500, 400),    # main map
+        _path(500, 400),    # main map (top-center)
         _path(1000, 300),   # north panel area
         _path(1000, 600),   # south panel area
-        _path(300, 700),    # main map
+        _path(800, 650),    # bottom-center Bray inset
+        _path(300, 700),    # main map (bottom-left, outside Bray inset)
     ]
     out = reject_inset_paths(paths)
     assert len(out) == 2
@@ -55,11 +63,11 @@ def test_reject_filters_only_inset_paths():
     assert (300, 700) in centroids
 
 
-def test_inset_bboxes_cover_right_strip_only():
-    # All inset boxes start in the right portion of the A3 page.
-    for x0, _y0, x1, _y1 in INSET_BBOXES:
-        assert x0 > 800
-        assert x1 <= 1200
+def test_inset_bboxes_are_within_page_bounds():
+    # Every inset box must lie inside the A3 page rect.
+    for x0, y0, x1, y1 in INSET_BBOXES:
+        assert 0 <= x0 < x1 <= 1200
+        assert 0 <= y0 < y1 <= 850
 
 
 def test_off_page_path_rejected():

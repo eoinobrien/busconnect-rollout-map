@@ -19,15 +19,19 @@ from __future__ import annotations
 from .extract import Path
 
 
-# Right-side panel strip on the 2025-10 revision: covers both the
-# "North Dublin" and "South Dublin" detail insets. The detected
-# stroked-rectangle frames understate the visible panels (probably
-# inner content boxes rather than outer chrome), so we go with one
-# generous strip from x=875 to the page edge. Main-map content
-# stays west of x=855 (Howth Head, the easternmost real corridor),
-# so the 20pt margin is safe.
+# Inset panels on the 2025-10 revision:
+#   * Right-side strip x=875..1190 covers both the "North Dublin"
+#     and "South Dublin" detail insets stacked top-and-bottom on
+#     the right edge. Main-map content stays west of x=855 (Howth
+#     Head, the easternmost real corridor), so the 20pt margin is
+#     safe.
+#   * Bottom-center panel at PDF (650, 519)-(953, 800) is a Bray /
+#     south-coast detail inset. Content spills slightly past the
+#     visible frame's lower edge (the frame is at y=668 but route
+#     lines extend further), so the bbox here is generous to y=800.
 INSET_BBOXES: tuple[tuple[float, float, float, float], ...] = (
-    (875.0, 0.0, 1190.55, 841.89),
+    (875.0, 0.0, 1190.55, 841.89),  # right-side strip (N + S Dublin)
+    (650.0, 519.0, 953.0, 800.0),    # bottom-center Bray inset
 )
 
 

@@ -14,6 +14,13 @@ surviving polyline becomes one Feature with:
     properties.pdf_colour    hex string of the original PDF stroke -
                              handy when manually QA-ing which schematic
                              corridor a feature came from
+    properties.stroke        simplestyle-spec rendered stroke colour;
+                             takes route_colour when known, falls back
+                             to pdf_colour. geojson.io / mapshaper /
+                             most simple GeoJSON viewers honour this
+                             and paint each line in its real colour
+                             without a custom style layer.
+    properties["stroke-width"] simplestyle width (2px default)
     properties.source        always "pdf-future"
     properties.phase         always "future"
 
@@ -100,6 +107,8 @@ def build_future_routes(
             cat = None
             col = None
             rcol = None
+        pdf_hex = _hex_of_rgb(path.stroke)
+        stroke = rcol or pdf_hex or "#888888"
         feat = {
             "type": "Feature",
             "geometry": {"type": "LineString", "coordinates": coords},
@@ -109,7 +118,9 @@ def build_future_routes(
                 "category": cat,
                 "colour": col,
                 "route_colour": rcol,
-                "pdf_colour": _hex_of_rgb(path.stroke),
+                "pdf_colour": pdf_hex,
+                "stroke": stroke,
+                "stroke-width": 2,
                 "source": "pdf-future",
                 "phase": "future",
             },
