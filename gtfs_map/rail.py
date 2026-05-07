@@ -31,9 +31,11 @@ _AGENCY_NAME = {_LUAS: "LUAS", _RAIL: "Iarnród Éireann"}
 # DART runs Greystones↔Malahide on track shared with the Drogheda,
 # Wexford, and Maynooth commuter services — drawing it there is
 # just an extra stripe over those. The unique-to-DART stretch is
-# the Howth spur east of Howth Junction. Tight bbox around just
-# that spur: lat 53.385↔53.40, lon -6.115↔-6.06.
-_DART_SPUR_BBOX = (-6.115, 53.385, -6.060, 53.400)
+# the Howth spur east of Howth Junction. Bbox is the Howth
+# peninsula band, with the western edge nudged to lon -6.118 so
+# it includes the Howth Junction platform vertices (-6.116↔-6.117)
+# rather than ending 300 m short of the station.
+_DART_SPUR_BBOX = (-6.118, 53.385, -6.060, 53.400)
 
 
 def build_rail_geojson(gtfs_dir: Path, date_iso: str) -> dict:
