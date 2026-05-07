@@ -402,25 +402,42 @@ def build(
                 "phase": phase,
             })
 
-    # Cluster only when routes share a bundle group (spines, or HF +
-    # variants). Routes in different bundles — or any singleton —
-    # stay as separate labels even when their sampled stops collide.
+    # Cluster every route that samples a stop within ~10 m of
+    # another route's seed — regardless of category or bundle
+    # group. A shared stop on the quays where 13, 14, 15, 39, F1,
+    # F2 all stop should render as one badge listing every route,
+    # not as six overlapping pills. 4-decimal rounding (~11 m) is
+    # coarse enough that platform/lane offsets at the same stop
+    # bucket together but distinct stops 50 m apart stay separate.
     clusters: dict[tuple, list[dict]] = defaultdict(list)
     for s in label_seeds:
-        # Singletons cluster only with themselves (key includes the
-        # short name); bundleable routes cluster by bundle_key.
-        cluster_key = s["bundle_key"] or f"single-{s['short']}"
-        key = (round(s["lon"], 5), round(s["lat"], 5), cluster_key)
+        key = (round(s["lon"], 4), round(s["lat"], 4))
         clusters[key].append(s)
+
+    # Sort shorts so the badge reads spine letters first, then
+    # numerics ascending (with letter-suffix variants grouped after
+    # their parent), then everything else — matching the tooltip's
+    # ordering on the front-end.
+    _SPINE_LABEL_RE = re.compile(r"^([A-H])(\d+)$")
+    _NUMERIC_LABEL_RE = re.compile(r"^(\d+)([A-Z]*)$")
+
+    def _label_sort_key(s: str) -> tuple:
+        m = _SPINE_LABEL_RE.match(s)
+        if m:
+            return (0, m.group(1), int(m.group(2)))
+        m = _NUMERIC_LABEL_RE.match(s)
+        if m:
+            return (1, int(m.group(1)), m.group(2))
+        return (2, s)
 
     label_features: list[dict] = []
     for key, items in clusters.items():
-        # Build per-route entries (sorted by short) so the rendered
-        # badge can show each route in its own category colour.
+        # Build per-route entries so the rendered badge can show
+        # each route in its own category colour.
         by_short: dict[str, dict] = {}
         for it in items:
             by_short.setdefault(it["short"], it)
-        shorts = sorted(by_short)
+        shorts = sorted(by_short, key=_label_sort_key)
         colours = [by_short[s]["colour"] for s in shorts]
         # Highest-priority category for fallback / single-colour use.
         chosen = min(
