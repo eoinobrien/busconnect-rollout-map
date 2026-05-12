@@ -264,6 +264,7 @@
   <script
     src="https://unpkg.com/leaflet-polylinedecorator@1.6.0/dist/leaflet.polylineDecorator.js"
   ></script>
+  <script src="viewer/visibility.js"></script>
   <script>
     const CATEGORY_LABELS = {
       spine: 'Spines & high-frequency',
@@ -361,40 +362,22 @@
     let _phasesInHighlight = new Set();
 
     function recomputeHiddenReplacedRoutes() {
-      replacingByPhase = new Map();
-      const phasesMeta = (window._phasesMeta || {});
-      for (const pid of visibleFuturePhases) {
-        const info = phasesMeta[pid];
-        if (!info) continue;
-        for (const r of (info.replacing || [])) {
-          if (!r) continue;  // tolerate the occasional empty-string entry
-          if (!replacingByPhase.has(r)) replacingByPhase.set(r, new Set());
-          replacingByPhase.get(r).add(pid);
-        }
-      }
+      replacingByPhase = window.MapVisibility.computeReplacingByPhase(
+        visibleFuturePhases, window._phasesMeta || {},
+      );
     }
 
     function isRouteReplacedFor(routeId, phaseId) {
-      // True if `routeId` is in the replacing array of some active
-      // future phase OTHER than `phaseId` itself. A feature whose own
-      // phase is among the replacing phases is the brand new version
-      // of the route and must not be hidden.
-      const replacingPhases = replacingByPhase.get(routeId);
-      if (!replacingPhases) return false;
-      if (replacingPhases.has(phaseId)) return false;
-      return true;
+      return window.MapVisibility.isRouteReplacedFor(routeId, phaseId, {
+        replacingByPhase,
+      });
     }
 
     function recomputePhasesInHighlight() {
-      _phasesInHighlight = new Set();
-      if (!selectedRoutes) return;
-      const routePhase = window._routePhase || {};
-      for (const r of selectedRoutes) {
-        const p = routePhase[r];
-        if (p && futurePhases.has(p) && visibleFuturePhases.has(p)) {
-          _phasesInHighlight.add(p);
-        }
-      }
+      _phasesInHighlight = window.MapVisibility.computePhasesInHighlight(
+        selectedRoutes, window._routePhase || {},
+        futurePhases, visibleFuturePhases,
+      );
     }
 
     function isFeatureHidden(feature) {
@@ -670,11 +653,14 @@
           });
           dec.addTo(map);
           // PolylineDecorator wraps each pattern's markers in a
-          // FeatureGroup, so dec.eachLayer yields groups - we need
-          // one more level of iteration to reach the actual L.Markers
-          // (which are the only thing with getElement / .on('click')).
+          // FeatureGroup, so dec.eachLayer yields groups - recurse
+          // until we hit an actual L.Marker. We must use instanceof
+          // and NOT typeof layer.getElement === 'function' because
+          // L.FeatureGroup inherits getElement too (returns undefined)
+          // and would slip through, leaving applyLabelVisibility
+          // unable to hide its DOM later.
           const collectMarkers = layer => {
-            if (layer && typeof layer.getElement === 'function') {
+            if (layer instanceof L.Marker) {
               layer.on('click', (ev) => {
                 L.DomEvent.stopPropagation(ev);
                 applyHighlight([route]);
@@ -705,33 +691,29 @@
       // visible above.
       const LABEL_MIN_ZOOM = 13;
       function applyLabelVisibility() {
+        // Single source of truth for the per-label / per-pill rules
+        // lives in window.MapVisibility (also covered by node tests in
+        // tests/test_viewer_visibility.js). Here we just translate
+        // those decisions into DOM updates.
+        const state = {
+          futurePhases,
+          visibleFuturePhases,
+          visibleCategories,
+          selectedRoutes,
+          phasesInHighlight: _phasesInHighlight,
+          replacingByPhase,
+        };
         for (const lbl of allLabels) {
-          const phaseHidden = futurePhases.has(lbl.phase)
-            && !visibleFuturePhases.has(lbl.phase);
-          const categoryHidden = lbl.category
-            && !visibleCategories.has(lbl.category);
           const el = lbl.marker.getElement();
           if (!el) continue;
-          if (phaseHidden || categoryHidden) { el.style.display = 'none'; continue; }
-
-          // Per-pill visibility. A pill hides when its route is
-          // replaced by an active future phase the label doesn't
-          // belong to, OR when a highlight is on and the pill's route
-          // isn't part of it (with the network-preview exemption for
-          // active future phases).
-          const isFutureActive = futurePhases.has(lbl.phase)
-            && visibleFuturePhases.has(lbl.phase);
-          const phaseInHighlight = _phasesInHighlight.has(lbl.phase);
+          if (window.MapVisibility.isLabelHidden(lbl, state)) {
+            el.style.display = 'none';
+            continue;
+          }
           let visiblePillCount = 0;
           el.querySelectorAll('[data-route]').forEach(pillEl => {
             const r = pillEl.getAttribute('data-route');
-            const pillReplaced = isRouteReplacedFor(r, lbl.phase);
-            let pillVisible = !pillReplaced;
-            if (pillVisible && selectedRoutes) {
-              const inHighlight = selectedRoutes.has(r);
-              pillVisible = inHighlight
-                || (isFutureActive && !phaseInHighlight);
-            }
+            const pillVisible = window.MapVisibility.isPillVisible(r, lbl, state);
             pillEl.style.display = pillVisible ? '' : 'none';
             if (pillVisible) visiblePillCount++;
           });
