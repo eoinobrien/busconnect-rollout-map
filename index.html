@@ -22,6 +22,13 @@
       font-size: 12px;
       line-height: 1.5;
       width: 240px;
+      /* Cap to viewport so the panel doesn't run past the bottom of
+         the map; scroll internally when the search + categories +
+         live phases + future phases stack would otherwise exceed it.
+         Topright Leaflet control inset is ~16px above and below. */
+      max-height: calc(100vh - 32px);
+      overflow-y: auto;
+      overscroll-behavior: contain;
     }
     .panel h3 { margin: 0; font-size: 14px; font-weight: 700; }
     .panel .panel-sub {
