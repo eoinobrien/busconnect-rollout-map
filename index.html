@@ -662,13 +662,22 @@
             }],
           });
           dec.addTo(map);
-          dec.eachLayer(m => {
-            m.on('click', (ev) => {
-              L.DomEvent.stopPropagation(ev);
-              applyHighlight([route]);
-            });
-            allLabels.push({ marker: m, routes: [route], phase, category: cat });
-          });
+          // PolylineDecorator wraps each pattern's markers in a
+          // FeatureGroup, so dec.eachLayer yields groups - we need
+          // one more level of iteration to reach the actual L.Markers
+          // (which are the only thing with getElement / .on('click')).
+          const collectMarkers = layer => {
+            if (layer && typeof layer.getElement === 'function') {
+              layer.on('click', (ev) => {
+                L.DomEvent.stopPropagation(ev);
+                applyHighlight([route]);
+              });
+              allLabels.push({ marker: layer, routes: [route], phase, category: cat });
+            } else if (layer && typeof layer.eachLayer === 'function') {
+              layer.eachLayer(collectMarkers);
+            }
+          };
+          dec.eachLayer(collectMarkers);
           routeDecorators.push(dec);
         }
       }
