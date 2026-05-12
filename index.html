@@ -196,6 +196,13 @@
       transform: translate(-50%, -50%);
       cursor: pointer;
     }
+    /* Zoom-gated hide: applied via a class on the map container so
+       PolylineDecorator's markers can stay on the map permanently
+       (taking decorators off the map rebuilds the marker layers and
+       invalidates the references in allLabels). Inline display:none
+       from applyLabelVisibility still wins via specificity, so per-
+       phase / replacement filters keep working. */
+    .leaflet-container.labels-hidden .leaflet-marker-icon { display: none; }
     .route-label > span {
       display: inline-block;
       padding: 1px 5px;
@@ -734,19 +741,17 @@
       window._applyLabelVisibility = applyLabelVisibility;
 
       function syncLabels() {
-        const showLabels = map.getZoom() >= LABEL_MIN_ZOOM;
-        if (showLabels) {
-          for (const dec of routeDecorators) {
-            if (!map.hasLayer(dec)) dec.addTo(map);
-          }
-          // Decorator markers re-mount on add — DOM is fresh, so
-          // re-apply visibility filter to pick up active future
-          // phases and replacement state.
-          applyLabelVisibility();
+        // Toggle a CSS class on the map container rather than
+        // removing decorators from the map - removing them
+        // re-creates the marker layers and breaks allLabels'
+        // reference to the originals (then per-phase visibility
+        // can't take effect on the new markers and future shields
+        // appear by default at low zoom).
+        const mapEl = map.getContainer();
+        if (map.getZoom() >= LABEL_MIN_ZOOM) {
+          mapEl.classList.remove('labels-hidden');
         } else {
-          for (const dec of routeDecorators) {
-            if (map.hasLayer(dec)) map.removeLayer(dec);
-          }
+          mapEl.classList.add('labels-hidden');
         }
       }
       map.on('zoomend', syncLabels);
