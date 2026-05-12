@@ -247,6 +247,9 @@
     integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
     crossorigin=""
   ></script>
+  <script
+    src="https://unpkg.com/leaflet-polylinedecorator@1.6.0/dist/leaflet.polylineDecorator.js"
+  ></script>
   <script>
     const CATEGORY_LABELS = {
       spine: 'Spines & high-frequency',
@@ -585,6 +588,11 @@
       const groupsByCategory = {};
       for (const cat of CATEGORY_ORDER) groupsByCategory[cat] = L.layerGroup();
 
+      // PolylineDecorators that scatter outline-pill shield markers
+      // along each future route's geometry, materialised once at
+      // render time instead of pre-sampled into labels.geojson.
+      const futureDecorators = [];
+
       for (const f of routes.features) {
         const base = baseStyle(f);
         const layer = L.geoJSON(f, { style: () => base, renderer });
@@ -605,6 +613,46 @@
         const cat = f.properties.category || 'radial';
         layer.addTo(groupsByCategory[cat]);
         allLayers.push({ layer, feature: f, baseStyle: base });
+
+        // Future-phase routes get a PolylineDecorator that paints
+        // outline-pill shield markers along the line. Five markers
+        // (offset 10% then every 20%) match the density we used to
+        // pre-sample server-side. Click on a marker = highlight the
+        // route, same as clicking the line.
+        const phase = f.properties.phase || 'legacy';
+        if (futurePhases.has(phase)) {
+          const route = f.properties.route;
+          const col = f.properties.colour || '#888';
+          const dec = L.polylineDecorator(layer, {
+            patterns: [{
+              offset: '10%',
+              repeat: '20%',
+              symbol: L.Symbol.marker({
+                rotate: false,
+                markerOptions: {
+                  keyboard: false,
+                  icon: L.divIcon({
+                    className: '',
+                    html: `<div class="route-label future"><span data-route="${route}" style="--route-colour:${col}">${route}*</span></div>`,
+                    iconSize: null,
+                  }),
+                },
+              }),
+            }],
+          });
+          // Decorator must attach to map once so its featureGroup
+          // materialises markers; we then capture each marker for
+          // click-handler binding and the allLabels visibility list.
+          dec.addTo(map);
+          dec.eachLayer(m => {
+            m.on('click', (ev) => {
+              L.DomEvent.stopPropagation(ev);
+              applyHighlight([route]);
+            });
+            allLabels.push({ marker: m, routes: [route], phase });
+          });
+          futureDecorators.push(dec);
+        }
       }
 
       // Add categories in render order: radial first (back), spine last (front).
@@ -623,6 +671,10 @@
       const LABEL_MIN_ZOOM = 13;
       for (const f of (labels.features || [])) {
         const p = f.properties;
+        // Future labels are rendered by PolylineDecorator above, so
+        // skip any prebuilt entries from labels.geojson to avoid
+        // duplicating them.
+        if (futurePhases.has(p.phase || '')) continue;
         const [lon, lat] = f.geometry.coordinates;
         const routes = (p.routes && p.routes.length)
           ? p.routes
@@ -697,15 +749,25 @@
       window._applyLabelVisibility = applyLabelVisibility;
 
       function syncLabels() {
-        if (map.getZoom() >= LABEL_MIN_ZOOM) {
+        const showLabels = map.getZoom() >= LABEL_MIN_ZOOM;
+        if (showLabels) {
           if (!map.hasLayer(labelLayer)) {
             labelLayer.addTo(map);
             // Markers' DOM elements only exist after they're added,
             // so reapply visibility filter now.
             applyLabelVisibility();
           }
-        } else if (map.hasLayer(labelLayer)) {
-          map.removeLayer(labelLayer);
+          for (const dec of futureDecorators) {
+            if (!map.hasLayer(dec)) dec.addTo(map);
+          }
+          // Decorator markers re-mounted on add — re-apply filter so
+          // future visibility/replacement state stays consistent.
+          applyLabelVisibility();
+        } else {
+          if (map.hasLayer(labelLayer)) map.removeLayer(labelLayer);
+          for (const dec of futureDecorators) {
+            if (map.hasLayer(dec)) map.removeLayer(dec);
+          }
         }
       }
       map.on('zoomend', syncLabels);
@@ -718,15 +780,20 @@
       const phasesMeta = meta.rollout_phases || {};
       const routePhase = meta.route_phase || {};
       const phaseRouteCounts = meta.phase_route_counts || {};
+      // A phase is "future" when its `date` field isn't an ISO date.
+      // "future", "unknown", "planned", "tbd" all qualify - any non-
+      // YYYY-MM-DD signals the rollout hasn't been scheduled yet.
+      const _ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+      const _isFutureDate = d => !_ISO_DATE.test(d || '');
+
       // Stable ordering: historical phases first by date, then the
-      // future ones (date === "future") at the bottom. Future phases
-      // sort by their leading number ("8 (Potential)" before
-      // "10 (Potential)") and non-numeric ids ("future") fall to the
-      // very end.
+      // future ones at the bottom. Future phases sort by their leading
+      // number ("8 (Potential)" before "10 (Potential)") and non-
+      // numeric ids ("future") fall to the very end.
       const phaseIds = Object.keys(phasesMeta).sort((a, b) => {
         const ia = phasesMeta[a] || {}; const ib = phasesMeta[b] || {};
-        const fa = ia.date === 'future' ? 1 : 0;
-        const fb = ib.date === 'future' ? 1 : 0;
+        const fa = _isFutureDate(ia.date) ? 1 : 0;
+        const fb = _isFutureDate(ib.date) ? 1 : 0;
         if (fa !== fb) return fa - fb;
         if (fa === 1) {
           const na = parseInt(a, 10);
@@ -741,7 +808,7 @@
       window._phasesMeta = phasesMeta;
       futurePhases.clear();
       for (const [pid, info] of Object.entries(phasesMeta)) {
-        if (info && info.date === 'future') futurePhases.add(pid);
+        if (info && _isFutureDate(info.date)) futurePhases.add(pid);
       }
       const hour = meta.high_frequency_hour;
       const hourLabel = hour === 0 ? 'midnight' : hour === 12 ? 'noon' : hour < 12 ? `${hour} am` : `${hour - 12} pm`;

@@ -8,9 +8,9 @@ from pathlib import Path
 
 from gtfs_map.pipeline import build
 from gtfs_map.rail import build_rail_geojson
+from gtfs_map.pipeline import _is_future_date
 from pdf_map.manual import (
     FUTURE_PHASE,
-    build_future_labels,
     distinct_routes as _future_distinct_routes,
     load_manual_future_features,
 )
@@ -41,10 +41,16 @@ def _merge_future_routes(
     including the `replacing` arrays.
     """
     rollout = meta.get("rollout_phases", {})
+    # Manual features represent the planned alignment, so look up
+    # their phase from FUTURE phases only. Listing a live route id
+    # in a future phase's `routes` array is fine - it doesn't drag
+    # the live feature's phase tag forward.
     short_to_phase: dict[str, str] = {}
     for phase_id, info in rollout.items():
+        if not _is_future_date(info.get("date")):
+            continue
         for r in info.get("routes", []):
-            short_to_phase[r] = phase_id
+            short_to_phase.setdefault(r, phase_id)
 
     extra = load_manual_future_features(manual_path, short_to_phase)
     if not extra:
@@ -78,14 +84,11 @@ def _merge_future_routes(
             "replacing": [],
         })
 
-    label_count = 0
-    if labels is not None:
-        extra_labels = build_future_labels(extra)
-        if extra_labels:
-            labels["features"].extend(extra_labels)
-            meta["label_feature_count"] = len(labels["features"])
-            label_count = len(extra_labels)
-    return len(extra), label_count
+    # Future-route labels are rendered client-side via
+    # Leaflet.PolylineDecorator (see index.html), so we no longer
+    # pre-sample them into labels.geojson. Return 0 for the label
+    # count - the build summary still prints it for visibility.
+    return len(extra), 0
 
 
 def main() -> None:

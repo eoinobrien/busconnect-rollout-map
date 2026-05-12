@@ -26,6 +26,19 @@ def test_x_prefix_express_routes_are_peak():
         assert categorise(name) == "peak"
 
 
+def test_x_suffix_express_routes_are_peak():
+    # Pre-BusConnects express variants suffix the parent number with X:
+    # 39X, 70X, 270X, 33X. They're peak/express, not radial.
+    for name in ("39X", "70X", "270X", "33X", "16x"):
+        assert categorise(name) == "peak"
+
+
+def test_x_suffix_express_stays_peak_when_high_frequency():
+    # An express running every 10 minutes is still an express - not
+    # promoted to spine like a plain-numeric HF route would be.
+    assert categorise("39X", high_frequency=True) == "peak"
+
+
 def test_plain_numeric_and_other_routes_are_radial():
     for name in ("13", "46A", "155", "102", "102C", "73", "104"):
         assert categorise(name) == "radial"

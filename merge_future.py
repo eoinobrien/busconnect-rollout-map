@@ -17,9 +17,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 from build import _merge_future_routes, FUTURE_PHASE
+
+
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _is_future_date(date_value) -> bool:
+    """A phase whose `date` isn't an ISO calendar date counts as future.
+
+    "future", "unknown", "planned", "tbd" all qualify - any non-
+    YYYY-MM-DD value means the rollout hasn't been scheduled.
+    """
+    return not _ISO_DATE_RE.match(str(date_value or ""))
 
 
 def _live_route_phase_map(meta: dict, rollout: dict) -> dict[str, str]:
@@ -33,16 +46,17 @@ def _live_route_phase_map(meta: dict, rollout: dict) -> dict[str, str]:
         # Drop future-phase assignments; we'll rebuild them from the
         # manual merge. Keep GTFS routes with their existing phase.
         rp = rollout.get(p, {})
-        if rp.get("date") == "future":
+        if _is_future_date(rp.get("date")):
             continue
         out[rid] = short_to_phase.get(rid, p)
     return out
 
 
 def _strip_future(routes: dict, labels: dict, rollout: dict) -> None:
-    """Drop features and labels whose phase is a date=future entry."""
+    """Drop features and labels whose phase is a future entry."""
     future_phases = {
-        pid for pid, info in rollout.items() if info.get("date") == "future"
+        pid for pid, info in rollout.items()
+        if _is_future_date(info.get("date"))
     }
     future_phases.add(FUTURE_PHASE)  # legacy synthetic bucket if any
 
@@ -97,7 +111,7 @@ def main() -> None:
     # Reset rendered feature count; merge will append.
     meta["route_count"] = len({
         r for r, p in meta["route_phase"].items()
-        if rollout.get(p, {}).get("date") != "future"
+        if not _is_future_date(rollout.get(p, {}).get("date"))
     })
     meta["feature_count"] = len(routes["features"])
     if labels is not None:
@@ -116,7 +130,7 @@ def main() -> None:
           f"{meta['phase_route_counts'].get(FUTURE_PHASE, 0)} unattached fallback")
     print(f"  per declared phase:     {{")
     for pid, info in sorted(rollout.items()):
-        if info.get("date") != "future":
+        if not _is_future_date(info.get("date")):
             continue
         print(f"    {pid!r}: {meta['phase_route_counts'].get(pid, 0)} routes / "
               f"{len(info.get('replacing', []))} replacing")

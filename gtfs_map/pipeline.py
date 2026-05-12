@@ -112,12 +112,31 @@ def _bundle_key(short: str, hf_shorts: set[str]) -> str | None:
     return None
 
 
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _is_future_date(date_value) -> bool:
+    """True when a rollout-phases.json entry has no ISO calendar date.
+
+    "future", "unknown", "planned", "tbd" and any other non-YYYY-MM-DD
+    value all count as future. Used to keep future phases from
+    reassigning a live route's phase tag: route 80 stays in phase 7
+    even though it appears in phase 10 (Potential)'s `routes` list.
+    """
+    return not _ISO_DATE_RE.match(str(date_value or ""))
+
+
 def _load_rollout_phases(path: Path) -> tuple[dict, dict[str, str]]:
     if not path.exists():
         return {}, {}
     raw = _json.loads(path.read_text())
     short_to_phase: dict[str, str] = {}
     for phase_id, info in raw.items():
+        if _is_future_date(info.get("date")):
+            # Future phases describe planned route compositions, not
+            # current GTFS-shape phase membership; skip them here so
+            # live routes keep their introducing live phase.
+            continue
         for short in info.get("routes", []):
             short_to_phase[short] = phase_id
     return raw, short_to_phase

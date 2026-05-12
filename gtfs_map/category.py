@@ -4,6 +4,13 @@ import re
 
 
 _SPINE_RE = re.compile(r"^[A-H]\d+$")
+# Pre-BusConnects express routes carry the original number plus a
+# trailing X: 39X, 70X, 270X, 33X. They're peak/express - distinct
+# from the X-prefix newer scheme (X1, X25) which is matched by the
+# `first in ("P", "X")` test below. We don't want HF promotion to
+# spine for these either; an express running every 10 minutes is
+# still an express.
+_EXPRESS_SUFFIX_RE = re.compile(r"^\d+X$", re.IGNORECASE)
 
 
 # Category palette per the brief:
@@ -44,6 +51,8 @@ def categorise(route_short_name: str, *, high_frequency: bool = False) -> str:
     if first in ("W", "N", "S"):
         return "orbital"
     if first in ("P", "X"):
+        return "peak"
+    if _EXPRESS_SUFFIX_RE.match(route_short_name):
         return "peak"
     if high_frequency:
         return "spine"
