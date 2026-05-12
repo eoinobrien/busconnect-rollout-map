@@ -293,7 +293,14 @@
     //    `replacing` array.
     const futurePhases = new Set();
     const visibleFuturePhases = new Set();
-    const hiddenReplacedRoutes = new Set();
+    // Map<route_id, Set<phase_id>>: which active future phases list
+    // this route in their `replacing` array. When the route shows up
+    // in a feature, hide it UNLESS that feature's own phase is one of
+    // the replacing phases — i.e. the feature is the new version of
+    // the route introduced by that phase. Handles the case where a
+    // route_id (e.g. "80") appears as both replaced legacy and brand
+    // new in the same rollout.
+    let replacingByPhase = new Map();
 
     function weightForRoutes(n) {
       // Stroke width grows with how many routes share this category
@@ -331,13 +338,28 @@
     let _phasesInHighlight = new Set();
 
     function recomputeHiddenReplacedRoutes() {
-      hiddenReplacedRoutes.clear();
+      replacingByPhase = new Map();
       const phasesMeta = (window._phasesMeta || {});
       for (const pid of visibleFuturePhases) {
         const info = phasesMeta[pid];
         if (!info) continue;
-        for (const r of (info.replacing || [])) hiddenReplacedRoutes.add(r);
+        for (const r of (info.replacing || [])) {
+          if (!r) continue;  // tolerate the occasional empty-string entry
+          if (!replacingByPhase.has(r)) replacingByPhase.set(r, new Set());
+          replacingByPhase.get(r).add(pid);
+        }
       }
+    }
+
+    function isRouteReplacedFor(routeId, phaseId) {
+      // True if `routeId` is in the replacing array of some active
+      // future phase OTHER than `phaseId` itself. A feature whose own
+      // phase is among the replacing phases is the brand new version
+      // of the route and must not be hidden.
+      const replacingPhases = replacingByPhase.get(routeId);
+      if (!replacingPhases) return false;
+      if (replacingPhases.has(phaseId)) return false;
+      return true;
     }
 
     function recomputePhasesInHighlight() {
@@ -359,7 +381,7 @@
         return true;
       }
       const fRoutes = p.routes || (p.route ? [p.route] : []);
-      return fRoutes.some(r => hiddenReplacedRoutes.has(r));
+      return fRoutes.some(r => isRouteReplacedFor(r, phase));
     }
 
     function styleForItem(item) {
@@ -618,7 +640,7 @@
         for (const lbl of allLabels) {
           const phaseHidden = futurePhases.has(lbl.phase)
             && !visibleFuturePhases.has(lbl.phase);
-          const replaced = lbl.routes.some(r => hiddenReplacedRoutes.has(r));
+          const replaced = lbl.routes.some(r => isRouteReplacedFor(r, lbl.phase));
           let visible = !phaseHidden && !replaced;
           if (visible && selectedRoutes) {
             const inHighlight = lbl.routes.some(r => selectedRoutes.has(r));
