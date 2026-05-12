@@ -381,7 +381,23 @@
         return true;
       }
       const fRoutes = p.routes || (p.route ? [p.route] : []);
-      return fRoutes.some(r => isRouteReplacedFor(r, phase));
+      if (fRoutes.length === 0) return false;
+      // A shared-corridor feature carries multiple route_ids. We
+      // hide it only when EVERY route on it has been replaced; if at
+      // least one is still active the line stays. The label and
+      // tooltip filter out the replaced names so the user only sees
+      // the routes that remain on the segment.
+      return fRoutes.every(r => isRouteReplacedFor(r, phase));
+    }
+
+    function visibleRoutesFor(feature) {
+      // Subset of a feature's routes that aren't currently replaced
+      // (used for label and tooltip rendering when a future phase is
+      // active mid-corridor).
+      const p = feature.properties || {};
+      const phase = p.phase || 'legacy';
+      const fRoutes = p.routes || (p.route ? [p.route] : []);
+      return fRoutes.filter(r => !isRouteReplacedFor(r, phase));
     }
 
     function styleForItem(item) {
@@ -489,12 +505,18 @@
       return a < b ? -1 : a > b ? 1 : 0;
     }
 
-    function formatRouteList(routes) {
+    function formatRouteList(routes, featurePhase) {
       // When phase rows are selected, narrow the tooltip to just
       // the routes in that phase — hovering a shared corridor with
       // phase 1 selected should show only the H spines, not every
-      // HF radial that happens to share the road.
-      const arr = (routes || []).slice();
+      // HF radial that happens to share the road. Routes that have
+      // been replaced by an active future phase are also dropped so
+      // a [82, 65] bundle hovered after activating 65's replacement
+      // reads as just "82".
+      let arr = (routes || []).slice();
+      if (featurePhase != null) {
+        arr = arr.filter(r => !isRouteReplacedFor(r, featurePhase));
+      }
       const selected = window._selectedPhases;
       const routePhase = window._routePhase || {};
       let filtered = arr;
@@ -509,7 +531,7 @@
 
     function tooltipFor(feature) {
       const p = feature.properties;
-      const names = formatRouteList(p.routes);
+      const names = formatRouteList(p.routes, p.phase || 'legacy');
       return `<b>${names}</b><br>${p.route_long_name || ''}<br><i>${p.agency || ''}</i>`;
     }
 
@@ -616,12 +638,16 @@
         const isFuture = futurePhases.has(phase);
         // Future routes: append asterisk to indicate planned status.
         // Outline-only style is applied via the .future CSS class.
+        // data-route attribute lets applyLabelVisibility hide
+        // individual pills when their route is replaced inside a
+        // shared-corridor label (e.g. drop the 65 pill from a
+        // [82, 65] cluster while leaving the 82 pill visible).
         const inner = routes.map((r, i) => {
           const text = isFuture ? `${r}*` : r;
           if (isFuture) {
-            return `<span style="--route-colour:${cols[i]}">${text}</span>`;
+            return `<span data-route="${r}" style="--route-colour:${cols[i]}">${text}</span>`;
           }
-          return `<span style="background:${cols[i]}">${text}</span>`;
+          return `<span data-route="${r}" style="background:${cols[i]}">${text}</span>`;
         }).join('');
         const icon = L.divIcon({
           className: '',
@@ -640,20 +666,32 @@
         for (const lbl of allLabels) {
           const phaseHidden = futurePhases.has(lbl.phase)
             && !visibleFuturePhases.has(lbl.phase);
-          const replaced = lbl.routes.some(r => isRouteReplacedFor(r, lbl.phase));
-          let visible = !phaseHidden && !replaced;
-          if (visible && selectedRoutes) {
-            const inHighlight = lbl.routes.some(r => selectedRoutes.has(r));
-            const isFutureActive = futurePhases.has(lbl.phase)
-              && visibleFuturePhases.has(lbl.phase);
-            const phaseInHighlight = _phasesInHighlight.has(lbl.phase);
-            // Show this label if it's the highlight target; or if its
-            // phase is an active future phase that the highlight isn't
-            // drilling into (network-preview mode).
-            visible = inHighlight || (isFutureActive && !phaseInHighlight);
-          }
           const el = lbl.marker.getElement();
-          if (el) el.style.display = visible ? '' : 'none';
+          if (!el) continue;
+          if (phaseHidden) { el.style.display = 'none'; continue; }
+
+          // Per-pill visibility. A pill hides when its route is
+          // replaced by an active future phase the label doesn't
+          // belong to, OR when a highlight is on and the pill's route
+          // isn't part of it (with the network-preview exemption for
+          // active future phases).
+          const isFutureActive = futurePhases.has(lbl.phase)
+            && visibleFuturePhases.has(lbl.phase);
+          const phaseInHighlight = _phasesInHighlight.has(lbl.phase);
+          let visiblePillCount = 0;
+          el.querySelectorAll('[data-route]').forEach(pillEl => {
+            const r = pillEl.getAttribute('data-route');
+            const pillReplaced = isRouteReplacedFor(r, lbl.phase);
+            let pillVisible = !pillReplaced;
+            if (pillVisible && selectedRoutes) {
+              const inHighlight = selectedRoutes.has(r);
+              pillVisible = inHighlight
+                || (isFutureActive && !phaseInHighlight);
+            }
+            pillEl.style.display = pillVisible ? '' : 'none';
+            if (pillVisible) visiblePillCount++;
+          });
+          el.style.display = visiblePillCount > 0 ? '' : 'none';
         }
       }
       window._applyLabelVisibility = applyLabelVisibility;
