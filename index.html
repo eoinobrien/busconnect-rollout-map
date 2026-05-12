@@ -667,6 +667,15 @@
             }],
           });
           dec.addTo(map);
+          // PolylineDecorator subscribes to map.moveend and calls
+          // redraw -> _draw -> clearLayers() on every pan / zoom,
+          // destroying the markers and replacing them with fresh
+          // ones. allLabels' references go stale and visibility
+          // can't be re-applied to the new set. Our pattern is a
+          // percentage of line length (constant in lat/lng), so
+          // there's nothing to recompute on a move - kill the
+          // listener so markers stay put.
+          map.off('moveend', dec.redraw, dec);
           // PolylineDecorator wraps each pattern's markers in a
           // FeatureGroup, so dec.eachLayer yields groups - recurse
           // until we hit an actual L.Marker. We must use instanceof

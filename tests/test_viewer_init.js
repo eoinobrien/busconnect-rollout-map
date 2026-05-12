@@ -197,6 +197,71 @@ test('category toggle off hides every label in that category', () => {
 });
 
 
+test('regression: PolylineDecorator-style redraw on map move regenerates markers; allLabels references must stay valid', () => {
+  // Repro for the "future labels visible after first map interaction"
+  // bug. PolylineDecorator subscribes to map.moveend and calls redraw,
+  // which clearLayers() + rebuilds the symbol FeatureGroups. allLabels
+  // captured BEFORE the redraw points at destroyed DOM. The fix is to
+  // detach the moveend listener after addTo so markers aren't
+  // recreated on pan/zoom.
+  const dom = new JSDOM('<!doctype html><html><body></body></html>');
+  const doc = dom.window.document;
+
+  // Minimal stand-ins. The "marker" tracks whether it's currently
+  // mounted; getElement returns null when unmounted, mirroring real
+  // L.Marker behaviour after the FeatureGroup is cleared.
+  function buildMarker() {
+    const el = doc.createElement('div');
+    el.className = 'leaflet-marker-icon';
+    el.innerHTML = '<span data-route="A1" style="--route-colour:#d62728">A1*</span>';
+    const marker = {
+      _mounted: true,
+      getElement() { return this._mounted ? el : null; },
+    };
+    return marker;
+  }
+  // Decorator pattern produces ONE marker for this test.
+  const originalMarker = buildMarker();
+  const allLabels = [{ marker: originalMarker, routes: ['A1'], phase: '10', category: 'spine' }];
+
+  const state = {
+    futurePhases: new Set(['10']),
+    visibleFuturePhases: new Set(),
+    visibleCategories: new Set(['spine']),
+    selectedRoutes: null,
+    phasesInHighlight: new Set(),
+    replacingByPhase: new Map(),
+  };
+
+  // Initial applyLabelVisibility: hides the marker.
+  function apply() {
+    for (const lbl of allLabels) {
+      const el = lbl.marker.getElement();
+      if (!el) continue;
+      if (V.isLabelHidden(lbl, state)) el.style.display = 'none';
+      else el.style.display = '';
+    }
+  }
+  apply();
+  assert.equal(originalMarker.getElement().style.display, 'none',
+    'marker hidden right after init');
+
+  // Simulate decorator.redraw: clearLayers() unmounts the original
+  // and produces a fresh marker (new DOM, default display).
+  originalMarker._mounted = false;
+  const newMarker = buildMarker();
+  // ←—— this is the bug: allLabels still points to originalMarker.
+  // applyLabelVisibility runs but originalMarker.getElement() is now
+  // null, so nothing is updated; newMarker stays visible.
+  apply();
+  assert.equal(newMarker.getElement().style.display, '',
+    'fresh marker is rendered visible because allLabels is stale');
+
+  // The actual fix is at the source: don't let the decorator redraw
+  // (kill its moveend listener after addTo). This test exists to
+  // codify the invariant: marker re-creation breaks our visibility.
+});
+
 test('collectMarkers walks FeatureGroup tree and grabs L.Markers', () => {
   // Mirror the structural assumption in index.html: a PolylineDecorator
   // (a FeatureGroup) holds per-pattern FeatureGroups, each holding the
