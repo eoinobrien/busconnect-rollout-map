@@ -631,40 +631,46 @@
         // outline-pill shield markers along the line. Five markers
         // (offset 10% then every 20%) match the density we used to
         // pre-sample server-side. Click on a marker = highlight the
-        // route, same as clicking the line.
+        // route, same as clicking the line. PolylineDecorator wants
+        // a layer with getLatLngs() - the L.GeoJSON wrapper doesn't
+        // expose that, so we hand it the inner polyline(s) directly.
         const phase = f.properties.phase || 'legacy';
         if (futurePhases.has(phase)) {
           const route = f.properties.route;
           const col = f.properties.colour || '#888';
-          const dec = L.polylineDecorator(layer, {
-            patterns: [{
-              offset: '10%',
-              repeat: '20%',
-              symbol: L.Symbol.marker({
-                rotate: false,
-                markerOptions: {
-                  keyboard: false,
-                  icon: L.divIcon({
-                    className: '',
-                    html: `<div class="route-label future"><span data-route="${route}" style="--route-colour:${col}">${route}*</span></div>`,
-                    iconSize: null,
-                  }),
-                },
-              }),
-            }],
-          });
-          // Decorator must attach to map once so its featureGroup
-          // materialises markers; we then capture each marker for
-          // click-handler binding and the allLabels visibility list.
-          dec.addTo(map);
-          dec.eachLayer(m => {
-            m.on('click', (ev) => {
-              L.DomEvent.stopPropagation(ev);
-              applyHighlight([route]);
+          const innerPolylines = [];
+          layer.eachLayer(l => innerPolylines.push(l));
+          if (innerPolylines.length) {
+            const dec = L.polylineDecorator(innerPolylines, {
+              patterns: [{
+                offset: '10%',
+                repeat: '20%',
+                symbol: L.Symbol.marker({
+                  rotate: false,
+                  markerOptions: {
+                    keyboard: false,
+                    icon: L.divIcon({
+                      className: '',
+                      html: `<div class="route-label future"><span data-route="${route}" style="--route-colour:${col}">${route}*</span></div>`,
+                      iconSize: null,
+                    }),
+                  },
+                }),
+              }],
             });
-            allLabels.push({ marker: m, routes: [route], phase });
-          });
-          futureDecorators.push(dec);
+            // Decorator must attach to map once so its featureGroup
+            // materialises markers; we then capture each marker for
+            // click-handler binding and the allLabels visibility list.
+            dec.addTo(map);
+            dec.eachLayer(m => {
+              m.on('click', (ev) => {
+                L.DomEvent.stopPropagation(ev);
+                applyHighlight([route]);
+              });
+              allLabels.push({ marker: m, routes: [route], phase });
+            });
+            futureDecorators.push(dec);
+          }
         }
       }
 
