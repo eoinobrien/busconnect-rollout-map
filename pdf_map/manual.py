@@ -9,20 +9,12 @@ either one route_id ("A1", "L11", "P98") or a space-joined list
 into the same routes/route/category/colour shape that the live
 pipeline emits and tag every feature with phase="future" so the
 viewer's existing BusConnects-phase toggle picks it up.
-
-We also synthesise label seeds for the future routes by sampling
-points along each route's MultiLineString. Labels carry phase=
-"future" so the front-end can render them with the outline-only
-pill style and asterisk suffix that distinguishes a planned route
-from a live one.
 """
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-
-from shapely.geometry import LineString, MultiLineString, shape
 
 from gtfs_map.category import categorise, category_colour
 
@@ -109,87 +101,3 @@ def load_manual_future_features(
     return features
 
 
-def distinct_routes(features: list[dict]) -> list[str]:
-    """Sorted set-union of route_ids across the manual feature list."""
-    seen: set[str] = set()
-    for f in features:
-        for r in f["properties"].get("routes", []) or []:
-            seen.add(r)
-    return sorted(seen)
-
-
-def _sample_along_geometry(geom, fractions: tuple[float, ...]) -> list[tuple[float, float]]:
-    """Sample (lon, lat) at given length-fractions of a (Multi)LineString.
-
-    Fractions are expressed as 0..1 of the geometry's *total* length.
-    For MultiLineString this walks the parts in order, so 0.5 is the
-    midpoint of the concatenated route, not the midpoint of one part.
-    """
-    if isinstance(geom, MultiLineString):
-        parts = list(geom.geoms)
-    elif isinstance(geom, LineString):
-        parts = [geom]
-    else:
-        return []
-    if not parts:
-        return []
-    total = sum(p.length for p in parts)
-    if total <= 0:
-        return []
-
-    out: list[tuple[float, float]] = []
-    for f in fractions:
-        target = total * f
-        acc = 0.0
-        for part in parts:
-            if acc + part.length >= target:
-                local = max(0.0, target - acc)
-                pt = part.interpolate(local)
-                out.append((pt.x, pt.y))
-                break
-            acc += part.length
-    return out
-
-
-# Sample 5 points evenly along each future route — start, two
-# intermediates, two near the end. Same density as the GTFS label
-# sampler tends to produce for a typical urban route.
-_LABEL_FRACTIONS: tuple[float, ...] = (0.1, 0.3, 0.5, 0.7, 0.9)
-
-
-def build_future_labels(features: list[dict]) -> list[dict]:
-    """Return label-point features matching labels.geojson's schema.
-
-    Each route feature contributes a handful of points sampled along
-    its MultiLineString. Phase is inherited from the source feature,
-    so a route assigned to "11 (Potential)" gets labels tagged
-    "11 (Potential)" too - the viewer uses phase + rollout_phases.date
-    to decide outline-only styling and visibility defaults.
-    """
-    labels: list[dict] = []
-    for f in features:
-        try:
-            geom = shape(f["geometry"])
-        except Exception:
-            continue
-        pts = _sample_along_geometry(geom, _LABEL_FRACTIONS)
-        if not pts:
-            continue
-        p = f["properties"]
-        routes = p.get("routes", [])
-        colour = p.get("colour")
-        category = p.get("category")
-        phase = p.get("phase", FUTURE_PHASE)
-        for lon, lat in pts:
-            labels.append({
-                "type": "Feature",
-                "geometry": {"type": "Point", "coordinates": [lon, lat]},
-                "properties": {
-                    "routes": routes,
-                    "colours": [colour] * len(routes),
-                    "category": category,
-                    "colour": colour,
-                    "phase": phase,
-                },
-            })
-    return labels

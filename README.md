@@ -27,13 +27,20 @@ python -m http.server 8000 --bind 127.0.0.1
 ## Tests
 
 ```bash
+# Python: synthetic-GTFS unit + integration tests
 python -m pytest tests/ -v
+
+# JavaScript: Node-based viewer tests
+node tests/test_viewer_visibility.js
+node tests/test_viewer_init.js
 ```
 
-28 unit + integration tests cover the calendar/services resolver,
-agency filter, shape selection, route classification, spine bundling,
-colour palette, and the end-to-end pipeline against a synthetic GTFS
-feed.
+The suite covers the calendar/services resolver, agency filter, shape
+selection, route categorisation, direction merging, frequency
+classification, the per-route pipeline against a synthetic GTFS feed,
+the LUAS/Iarnród Éireann rail builder, the future-routes merge/strip
+helpers, the PDF future-routes extraction stages, and the viewer's
+label visibility logic.
 
 ## Scope
 

@@ -8,14 +8,13 @@ from pathlib import Path
 
 import pandas as pd
 import pyproj
-from shapely.geometry import LineString, mapping
+from shapely.geometry import LineString
 
 from .category import CATEGORY_COLOURS, categorise, category_colour
 from .direction_merge import merge_directions
 from .frequency import high_frequency_route_ids_from_files
 from .services import active_services_for_date
 from .shapes import build_linestrings, representative_shape_ids
-from .stops import sample_stop_indices, stops_for_active_routes
 
 
 CITY_AGENCIES = {"7778019", "7778021"}
@@ -84,38 +83,10 @@ def _offset_line(line_wgs: LineString, offset_m: float) -> LineString:
     return LineString([_OFFSET_TO_WGS.transform(x, y) for x, y in offset_itm.coords])
 
 
-_SPINE_RE = re.compile(r"^([A-H])\d+$")
-_VARIANT_RE = re.compile(r"^(\d+)[A-Z]*$")
-
-
-def _bundle_key(short: str, hf_shorts: set[str]) -> str | None:
-    """Routes that should be visually bundled into one corridor.
-
-    - Lettered spine routes (A1, A2, B1, ..., H3) bundle within
-      their letter — that's the BusConnects spine corridor.
-    - High-frequency numeric routes bundle with their letter-suffix
-      variants (39 + 39A + 39X) only when the bare-numeric parent is
-      itself high-frequency. Without the HF anchor we leave them as
-      separate lines.
-
-    All other routes return None and are rendered as their own
-    independent feature.
-    """
-    m = _SPINE_RE.match(short)
-    if m:
-        return f"spine-{m.group(1)}"
-    m = _VARIANT_RE.match(short)
-    if m:
-        prefix = m.group(1)
-        if prefix in hf_shorts:
-            return f"num-{prefix}"
-    return None
-
-
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def _is_future_date(date_value) -> bool:
+def is_future_date(date_value) -> bool:
     """True when a rollout-phases.json entry has no ISO calendar date.
 
     "future", "unknown", "planned", "tbd" and any other non-YYYY-MM-DD
@@ -132,7 +103,7 @@ def _load_rollout_phases(path: Path) -> tuple[dict, dict[str, str]]:
     raw = _json.loads(path.read_text())
     short_to_phase: dict[str, str] = {}
     for phase_id, info in raw.items():
-        if _is_future_date(info.get("date")):
+        if is_future_date(info.get("date")):
             # Future phases describe planned route compositions, not
             # current GTFS-shape phase membership; skip them here so
             # live routes keep their introducing live phase.
@@ -145,24 +116,22 @@ def _load_rollout_phases(path: Path) -> tuple[dict, dict[str, str]]:
 def build(
     gtfs_dir: Path,
     date_iso: str,
-    with_labels: bool = False,
     rollout_phases_path: Path | None = None,
     *,
     offset_categories: bool = False,
 ):
-    """GTFS -> GeoJSON pipeline with per-category segment bundling.
+    """GTFS -> per-route GeoJSON LineString features.
 
     For each active route on `date_iso` we pick the most-frequent
-    shape per direction, clean fold-back vertices, and run
-    `segment_bundle` per category over per-direction fragments. The
-    output is one Feature per shared sub-segment: where multiple
-    routes ride the same metre of road, exactly one Feature carries
-    all their names in `routes`. Routes that diverge produce
-    separate Features for each unique stretch.
+    shape per direction and clean fold-back vertices. We emit one
+    Feature per (route, direction), each carrying a singleton
+    `routes` list so the front-end can toggle each route
+    independently. When `offset_categories` is set, non-spine
+    categories are pushed onto perpendicular slots so cross-category
+    overlaps render as parallel lines instead of stacking.
 
-    Feature properties: routes (list[str]), route_long_name, agency,
-    category, colour, phase, direction_id (only when the segment is
-    unambiguously one route in one direction).
+    Feature properties: route, routes, route_long_name, agency,
+    category, colour, phase, direction_id.
     """
     gtfs_dir = Path(gtfs_dir)
 
@@ -349,105 +318,4 @@ def build(
         "phase_route_counts": dict(phase_route_counts),
     }
 
-    if not with_labels:
-        return routes_geojson, meta
-
-    # Optional: per-route stop labels at first/last/sampled stops.
-    stops_by_route_id = stops_for_active_routes(gtfs_dir, trips)
-    short_to_route_id = {
-        short_by_id[rid]: rid for rid in stops_by_route_id if rid in short_by_id
-    }
-
-    # Per-route label seeds (sampled stops along each route), then
-    # cluster by location so that labels at the same physical stop
-    # combine into one badge listing every route that stops there.
-    # Each seed uses the route's OWN category and colour — not a
-    # walker feature's, which can bleed across categories in
-    # HF-parent + variant bundles (41 is spine via HF promotion, but
-    # 41B/41C/41D are radial).
-    _CAT_PRIORITY = {"spine": 0, "orbital": 1, "local": 2, "peak": 3, "radial": 4}
-
-    label_seeds: list[dict] = []
-    for short in sorted(rendered_shorts):
-        rid = short_to_route_id.get(short)
-        if rid is None:
-            continue
-        stops = stops_by_route_id.get(rid, [])
-        if len(stops) < 2:
-            continue
-        cat = short_to_category[short]
-        colour = category_colour(cat)
-        bk = _bundle_key(short, hf_shorts)
-        phase = short_to_phase.get(short, LEGACY_PHASE)
-        idxs = sample_stop_indices(len(stops), target_k=max(2, len(stops) // 8))
-        for i in idxs:
-            lon, lat = stops[i]
-            label_seeds.append({
-                "lon": lon,
-                "lat": lat,
-                "short": short,
-                "bundle_key": bk,
-                "category": cat,
-                "colour": colour,
-                "phase": phase,
-            })
-
-    # Cluster every route that samples a stop within ~10 m of
-    # another route's seed — regardless of category or bundle
-    # group. A shared stop on the quays where 13, 14, 15, 39, F1,
-    # F2 all stop should render as one badge listing every route,
-    # not as six overlapping pills. 4-decimal rounding (~11 m) is
-    # coarse enough that platform/lane offsets at the same stop
-    # bucket together but distinct stops 50 m apart stay separate.
-    clusters: dict[tuple, list[dict]] = defaultdict(list)
-    for s in label_seeds:
-        key = (round(s["lon"], 4), round(s["lat"], 4))
-        clusters[key].append(s)
-
-    # Sort shorts so the badge reads spine letters first, then
-    # numerics ascending (with letter-suffix variants grouped after
-    # their parent), then everything else — matching the tooltip's
-    # ordering on the front-end.
-    _SPINE_LABEL_RE = re.compile(r"^([A-H])(\d+)$")
-    _NUMERIC_LABEL_RE = re.compile(r"^(\d+)([A-Z]*)$")
-
-    def _label_sort_key(s: str) -> tuple:
-        m = _SPINE_LABEL_RE.match(s)
-        if m:
-            return (0, m.group(1), int(m.group(2)))
-        m = _NUMERIC_LABEL_RE.match(s)
-        if m:
-            return (1, int(m.group(1)), m.group(2))
-        return (2, s)
-
-    label_features: list[dict] = []
-    for key, items in clusters.items():
-        # Build per-route entries so the rendered badge can show
-        # each route in its own category colour.
-        by_short: dict[str, dict] = {}
-        for it in items:
-            by_short.setdefault(it["short"], it)
-        shorts = sorted(by_short, key=_label_sort_key)
-        colours = [by_short[s]["colour"] for s in shorts]
-        # Highest-priority category for fallback / single-colour use.
-        chosen = min(
-            items,
-            key=lambda it: _CAT_PRIORITY.get(it["category"], 99),
-        )
-        phases = {it["phase"] for it in items}
-        phase = next(iter(phases)) if len(phases) == 1 else ""
-        label_features.append({
-            "type": "Feature",
-            "geometry": {"type": "Point", "coordinates": [items[0]["lon"], items[0]["lat"]]},
-            "properties": {
-                "routes": shorts,
-                "colours": colours,
-                "category": chosen["category"],
-                "colour": chosen["colour"],
-                "phase": phase,
-            },
-        })
-
-    labels = {"type": "FeatureCollection", "features": label_features}
-    meta["label_feature_count"] = len(label_features)
-    return routes_geojson, meta, labels
+    return routes_geojson, meta
