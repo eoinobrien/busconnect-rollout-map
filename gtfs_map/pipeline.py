@@ -13,7 +13,6 @@ from shapely.geometry import LineString, mapping
 from .category import CATEGORY_COLOURS, categorise, category_colour
 from .direction_merge import merge_directions
 from .frequency import high_frequency_route_ids_from_files
-from .segment_bundle import segment_bundle
 from .services import active_services_for_date
 from .shapes import build_linestrings, representative_shape_ids
 from .stops import sample_stop_indices, stops_for_active_routes
@@ -33,15 +32,23 @@ DIRECTION_MERGE_THRESHOLD_M = 30.0
 
 LEGACY_PHASE = "legacy"
 
-# Inter-category perpendicular offset. With per-walker emission,
-# same-category routes already collapse onto one rendered line via
-# stacking — but cross-category routes sharing a metre of road also
-# stack at identical coordinates, so only the top category is
-# visible. Offsetting each category into its own slot lets all
-# colours read at once. Max five categories means at most ±2 slots,
-# capping fan-out at 2 × OFFSET_SPACING_M from the centerline.
+# Per-category perpendicular offset. Each route stays its own
+# feature (no segment bundling), so cross-category sharing of a
+# metre of road would otherwise stack five colours on top of one
+# another and only the front one would be visible. We push each
+# category into its own slot in metres: spine on the centerline,
+# orbital + radial just off either side, peak + local further out.
+# Routes within the same category still overlap perfectly, which is
+# fine - the category colour reads as a single line through the
+# whole shared stretch.
 OFFSET_SPACING_M = 6.0
-_CATEGORY_OFFSET_ORDER = ("spine", "orbital", "radial", "peak", "local")
+_CATEGORY_SLOT: dict[str, int] = {
+    "spine": 0,
+    "orbital": 1,
+    "radial": -1,
+    "peak": 2,
+    "local": -2,
+}
 
 
 _OFFSET_TO_ITM = pyproj.Transformer.from_crs("EPSG:4326", "EPSG:2157", always_xy=True)
@@ -122,7 +129,7 @@ def build(
     with_labels: bool = False,
     rollout_phases_path: Path | None = None,
     *,
-    offset_categories: bool = True,
+    offset_categories: bool = False,
 ):
     """GTFS -> GeoJSON pipeline with per-category segment bundling.
 
@@ -217,14 +224,21 @@ def build(
         by_short_dir[short][int(dir_id)] = line
         routes_for_short.setdefault(short, route_id)
 
-    # Build per-direction fragments. A "fragment" is one direction's
-    # cleaned LineString; synthetic names are "{short}#{dir_id}". All
-    # fragments go into ONE big dict so segment_bundle sees the full
-    # picture of cross-route overlap.
+    # One Feature per (route, direction). Each route's two-direction
+    # GTFS shapes get merged-direction cleanup; tight pairs collapse to
+    # one cleaned geometry, Liffey-style one-way pairs stay as two.
+    # Every emitted feature carries a SINGLETON `routes` list so the
+    # front-end can toggle each route independently - the bundling
+    # that used to merge same-corridor routes into one feature was
+    # removed because runtime filters (future-phase replacement,
+    # per-route search hides) need single-route granularity. Same-
+    # category routes still overlap visually at shared corridors;
+    # cross-category overlap is broken up by the perpendicular slot
+    # offset below.
     short_to_category: dict[str, str] = {}
-    synth_to_short: dict[str, str] = {}
-    synth_to_dir: dict[str, int] = {}
-    all_frags: dict[str, _LS] = {}
+    features: list[dict] = []
+    rendered_shorts: set[str] = set()
+
     for short in sorted(by_short_dir):
         dirs = by_short_dir[short]
         d0 = dirs.get(0)
@@ -246,89 +260,43 @@ def build(
 
         cat = categorise(short, high_frequency=short in hf_shorts)
         short_to_category[short] = cat
+        route_id = routes_for_short[short]
+        colour = category_colour(cat)
+        phase = short_to_phase.get(short, LEGACY_PHASE)
+        slot = _CATEGORY_SLOT.get(cat, 0)
+
         for direction_id, line in ((0, cleaned_d0), (1, cleaned_d1)):
             if line is None:
                 continue
-            synth = f"{short}#{direction_id}"
-            synth_to_short[synth] = short
-            synth_to_dir[synth] = direction_id
-            all_frags[synth] = line
-
-    # Run segment_bundle, then emit one Feature per walker
-    # sub-segment. Each walker's path is a continuous tiling of its
-    # own GTFS shape, so the rendered geometry of any single route
-    # never jumps across tolerance-equivalent neighbours.
-    #
-    # The `routes` property carries only same-category companions at
-    # this stretch. When N spine routes share a corridor, all N
-    # walkers emit a feature here, all painted in spine red with the
-    # same width — they stack into a single visually-thicker red
-    # line. Other categories at the same metre of road are emitted
-    # by their own walkers in their own colour; CATEGORY_ORDER on
-    # the front-end decides which is on top.
-    bundled = segment_bundle(all_frags)
-    features: list[dict] = []
-    rendered_shorts: set[str] = set()
-    for sub, synth_members, walker_synth in bundled:
-        walker_short = synth_to_short[walker_synth]
-        walker_route_id = routes_for_short[walker_short]
-        cat = short_to_category[walker_short]
-        cat_synths = [
-            s for s in synth_members
-            if short_to_category[synth_to_short[s]] == cat
-        ]
-        cat_shorts = sorted({synth_to_short[s] for s in cat_synths})
-        dirs_in_cat = {synth_to_dir[s] for s in cat_synths}
-        colour = category_colour(cat)
-        phase = short_to_phase.get(walker_short, LEGACY_PHASE)
-
-        # Slot this segment into a perpendicular offset based on
-        # which categories actually share this stretch. With only
-        # one category present the slot is 0 (no offset). With more,
-        # slots are centered on 0 so the bundle's apparent centerline
-        # stays close to the underlying road. Order is taken from
-        # _CATEGORY_OFFSET_ORDER for stability.
-        if offset_categories:
-            cats_here = sorted(
-                {short_to_category[synth_to_short[s]] for s in synth_members},
-                key=lambda c: _CATEGORY_OFFSET_ORDER.index(c),
-            )
-            n_cats = len(cats_here)
-            slot = cats_here.index(cat) - (n_cats - 1) / 2
-            if slot != 0:
-                sub = _offset_line(sub, slot * OFFSET_SPACING_M)
-
-        properties: dict = {
-            # `route` (singular): the walker whose own GTFS shape
-            # produced this geometry. A line click resolves to one
-            # specific route via this field — without it the click
-            # would have to seed the full `routes` array, which
-            # under per-category emission lights up every companion
-            # spine's full path, not just the clicked route.
-            "route": walker_short,
-            "routes": cat_shorts,
-            "route_long_name": long_by_id.get(walker_route_id, ""),
-            "agency": AGENCY_LABEL.get(
-                agency_by_id.get(walker_route_id, ""), ""
-            ),
-            "category": cat,
-            "colour": colour,
-            "phase": phase,
-        }
-        if len(cat_shorts) == 1 and len(dirs_in_cat) == 1:
-            properties["direction_id"] = next(iter(dirs_in_cat))
-
-        geometry = {
-            "type": "LineString",
-            "coordinates": [list(c) for c in sub.coords],
-        }
-        features.append(
-            {"type": "Feature", "geometry": geometry, "properties": properties}
-        )
-        rendered_shorts.update(cat_shorts)
+            if offset_categories and slot != 0:
+                line = _offset_line(line, slot * OFFSET_SPACING_M)
+            features.append({
+                "type": "Feature",
+                "geometry": {
+                    "type": "LineString",
+                    "coordinates": [list(c) for c in line.coords],
+                },
+                "properties": {
+                    "route": short,
+                    "routes": [short],
+                    "route_long_name": long_by_id.get(route_id, ""),
+                    "agency": AGENCY_LABEL.get(
+                        agency_by_id.get(route_id, ""), ""
+                    ),
+                    "category": cat,
+                    "colour": colour,
+                    "phase": phase,
+                    "direction_id": direction_id,
+                },
+            })
+            rendered_shorts.add(short)
 
     features.sort(
-        key=lambda f: (f["properties"]["category"], f["properties"]["routes"])
+        key=lambda f: (
+            f["properties"]["category"],
+            f["properties"]["route"],
+            f["properties"].get("direction_id", 0),
+        )
     )
     routes_geojson = {"type": "FeatureCollection", "features": features}
 

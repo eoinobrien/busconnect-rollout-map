@@ -258,12 +258,9 @@ def test_E4b_route_with_only_direction_zero_renders(tmp_path):
 
 
 def test_E3b_two_directions_emit_one_feature_per_direction(tmp_path):
-    """Pipeline integration: route 13's two directions ~5.5m apart
-    (well inside segment_bundle tolerance) emit TWO Features — one
-    per walker — both stacked at the same category colour. Direction
-    info is preserved per feature only when the walker's segment
-    covers a single direction; here both directions sit within
-    tolerance of each other, so neither feature carries direction_id."""
+    """Each (route, direction) pair gets its own Feature. Two
+    directions of route 13 produce two features, each with a
+    singleton `routes` list and an explicit `direction_id`."""
     d = _write_gtfs(
         tmp_path / "gtfs",
         agency=_AGENCY,
@@ -291,7 +288,9 @@ def test_E3b_two_directions_emit_one_feature_per_direction(tmp_path):
     for f in feats:
         assert f["geometry"]["type"] == "LineString"
         assert f["properties"]["routes"] == ["13"]
-        assert "direction_id" not in f["properties"]
+        assert "direction_id" in f["properties"]
+    dirs = sorted(f["properties"]["direction_id"] for f in feats)
+    assert dirs == [0, 1]
 
 
 def test_E3c_liffey_style_one_way_pair_emits_two_linestring_features(tmp_path):
@@ -738,15 +737,18 @@ def test_S2_feature_colour_matches_category_colour(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Bundling integration (step 3 of the cross-route bundling work)
+# B: per-route emission on shared corridors (segment bundling removed)
 # --------------------------------------------------------------------------
+#
+# Bundling used to merge same-corridor routes into one Feature with a
+# multi-element `routes` array. That broke runtime filters (e.g. hide
+# route 65 while keeping 82 on a shared bundle), so the pipeline now
+# emits a singleton Feature per route. These tests pin that contract.
 
 
-def test_bundle_two_lettered_spines_share_routes_property(tmp_path):
-    """Two lettered spine routes (C1, C2) on the same corridor each
-    walk and emit a Feature; both carry routes=[C1, C2] and the same
-    spine colour, so they stack as a single visually-thicker red
-    line at the rendering layer."""
+def test_shared_corridor_routes_emit_independent_features(tmp_path):
+    """Two routes on the same shape each get their own Feature with
+    a singleton `routes` list (one for each direction they run in)."""
     d = _write_gtfs(
         tmp_path / "gtfs",
         agency=_AGENCY,
@@ -769,44 +771,14 @@ def test_bundle_two_lettered_spines_share_routes_property(tmp_path):
     routes, _ = build(d, "2026-05-05")
     feats = routes["features"]
     assert len(feats) == 2
+    shorts = sorted(f["properties"]["route"] for f in feats)
+    assert shorts == ["C1", "C2"]
     for f in feats:
         assert f["properties"]["category"] == "spine"
-        assert sorted(f["properties"]["routes"]) == ["C1", "C2"]
+        assert f["properties"]["routes"] == [f["properties"]["route"]]
 
 
-def test_bundle_two_unrelated_numeric_routes_share_at_category_level(tmp_path):
-    """Routes 13 and 16 on the same corridor are both radial — each
-    walks its own line and emits a Feature carrying routes=[13, 16].
-    Both stacked at the same purple colour render as a single line,
-    even though the routes aren't a deliberate "bundle group"."""
-    d = _write_gtfs(
-        tmp_path / "gtfs",
-        agency=_AGENCY,
-        calendar=_CALENDAR_WEEKDAY,
-        calendar_dates=_CAL_DATES_EMPTY,
-        routes=_routes_csv([
-            {"route_id": "R1", "agency_id": "7778019", "route_short_name": "13"},
-            {"route_id": "R2", "agency_id": "7778019", "route_short_name": "16"},
-        ]),
-        trips=_trips_csv([
-            {"route_id": "R1", "service_id": "WK", "trip_id": "T1",
-             "direction_id": 0, "shape_id": "S1"},
-            {"route_id": "R2", "service_id": "WK", "trip_id": "T2",
-             "direction_id": 0, "shape_id": "S1"},
-        ]),
-        shapes=_shapes_csv({"S1": [(-6.30, 53.30), (-6.20, 53.30)]}),
-        stop_times=_stop_times_csv([]),
-        stops=_stops_csv([]),
-    )
-    routes, _ = build(d, "2026-05-05")
-    feats = routes["features"]
-    assert len(feats) == 2
-    for f in feats:
-        assert f["properties"]["category"] == "radial"
-        assert sorted(f["properties"]["routes"]) == ["13", "16"]
-
-
-def test_bundle_two_far_apart_routes_stay_separate(tmp_path):
+def test_two_far_apart_routes_each_emit_their_own_feature(tmp_path):
     """Two routes whose shapes are geographically distinct (>100 m
     apart) emit TWO Features each with a singleton `routes` list."""
     d = _write_gtfs(
@@ -839,11 +811,10 @@ def test_bundle_two_far_apart_routes_stay_separate(tmp_path):
         assert len(f["properties"]["routes"]) == 1
 
 
-def test_bundle_does_not_cross_categories(tmp_path):
-    """A spine route (C1) and an L-route (L25) with IDENTICAL
-    shapes don't bundle because they're in different categories.
-    Bundling is per-category to prevent route_set cascading
-    across category boundaries."""
+def test_cross_category_shared_shape_keeps_each_routes_category(tmp_path):
+    """A spine route (C1) and an L-route (L25) with IDENTICAL shapes
+    emit two Features, each with their own category and singleton
+    `routes` list. The pipeline does no cross-category merging."""
     d = _write_gtfs(
         tmp_path / "gtfs",
         agency=_AGENCY,
@@ -867,17 +838,14 @@ def test_bundle_does_not_cross_categories(tmp_path):
     assert len(routes["features"]) == 2
     cats = sorted(f["properties"]["category"] for f in routes["features"])
     assert cats == ["local", "spine"]
-    # Each feature has just its own route in routes
     for f in routes["features"]:
         assert len(f["properties"]["routes"]) == 1
 
 
-def test_bundle_three_lettered_spines_each_walk_carries_all_three(tmp_path):
+def test_three_lettered_spines_each_emit_one_feature(tmp_path):
     """Three lettered spine routes (C1, C2, C3) on identical shape
-    each walk and emit a Feature; all three carry routes=[C1, C2,
-    C3]. Width at the rendering layer scales with len(routes), so
-    the stacked features render as a single visually-thicker red
-    trunk."""
+    each emit one Feature with a singleton `routes` list - no
+    bundling collapses them anymore."""
     d = _write_gtfs(
         tmp_path / "gtfs",
         agency=_AGENCY,
@@ -903,19 +871,18 @@ def test_bundle_three_lettered_spines_each_walk_carries_all_three(tmp_path):
     routes, _ = build(d, "2026-05-05")
     feats = routes["features"]
     assert len(feats) == 3
+    shorts = sorted(f["properties"]["route"] for f in feats)
+    assert shorts == ["C1", "C2", "C3"]
     for f in feats:
         assert f["properties"]["category"] == "spine"
-        assert sorted(f["properties"]["routes"]) == ["C1", "C2", "C3"]
+        assert f["properties"]["routes"] == [f["properties"]["route"]]
 
 
-def test_bundle_hf_numeric_with_letter_variant_split_by_category(tmp_path):
-    """Route 39 (HF-promoted to spine, red) and 39A (radial, purple
-    — variants don't inherit HF) share a corridor. Per-category
-    collapse emits TWO Features at that corridor: one spine [39]
-    and one radial [39A]. Each is drawn in its category colour;
-    the front-end's z-order puts spine on top."""
+def test_hf_numeric_with_letter_variant_each_keep_own_category(tmp_path):
+    """Route 39 (HF-promoted to spine) and 39A (radial — variants
+    don't inherit HF) share a corridor. Each emits its own Feature
+    with its own category and singleton `routes`."""
     from gtfs_map.pipeline import HIGH_FREQUENCY_HOUR
-    # 6 trips at the HF hour for route "39" -> high-frequency.
     hf_stop_times = [
         {"trip_id": f"T39_{i}", "stop_id": "X", "stop_sequence": 1,
          "departure_time": f"{HIGH_FREQUENCY_HOUR:02d}:{i:02d}:00"}

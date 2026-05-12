@@ -95,11 +95,16 @@ def main() -> None:
     parser.add_argument("--out", default="output")
     parser.add_argument("--no-labels", action="store_true")
     parser.add_argument(
+        "--offset",
+        action="store_true",
+        help="Apply per-category perpendicular offset so cross-category routes "
+             "on a shared road draw as parallel lines instead of stacking. Off "
+             "by default - each route renders on its exact GTFS shape.",
+    )
+    parser.add_argument(
         "--no-offset",
         action="store_true",
-        help="Skip the perpendicular category offset that splits same-corridor "
-             "routes from different categories into parallel lines. Useful when "
-             "you want every route to ride the exact road centreline.",
+        help="Deprecated and now the default. Accepted for backwards compat.",
     )
     parser.add_argument(
         "--manual-future",
@@ -112,7 +117,7 @@ def main() -> None:
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    offset_categories = not args.no_offset
+    offset_categories = args.offset and not args.no_offset
     if args.no_labels:
         routes, meta = build(
             Path(args.gtfs), args.date,
