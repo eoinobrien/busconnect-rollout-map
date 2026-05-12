@@ -611,13 +611,23 @@
       const routePhase = meta.route_phase || {};
       const phaseRouteCounts = meta.phase_route_counts || {};
       // Stable ordering: historical phases first by date, then the
-      // future ones (date === "future") at the bottom in phase-id order.
+      // future ones (date === "future") at the bottom. Future phases
+      // sort by their leading number ("8 (Potential)" before
+      // "10 (Potential)") and non-numeric ids ("future") fall to the
+      // very end.
       const phaseIds = Object.keys(phasesMeta).sort((a, b) => {
         const ia = phasesMeta[a] || {}; const ib = phasesMeta[b] || {};
         const fa = ia.date === 'future' ? 1 : 0;
         const fb = ib.date === 'future' ? 1 : 0;
         if (fa !== fb) return fa - fb;
-        if (fa === 1) return a < b ? -1 : a > b ? 1 : 0;
+        if (fa === 1) {
+          const na = parseInt(a, 10);
+          const nb = parseInt(b, 10);
+          if (!isNaN(na) && !isNaN(nb)) return na - nb;
+          if (!isNaN(na)) return -1;
+          if (!isNaN(nb)) return 1;
+          return a < b ? -1 : a > b ? 1 : 0;
+        }
         return (ia.date || '') < (ib.date || '') ? -1 : (ia.date || '') > (ib.date || '') ? 1 : 0;
       });
       window._phasesMeta = phasesMeta;
