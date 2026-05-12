@@ -9,3 +9,9 @@ __pycache__/
 .claude/
 *.png
 rail-build.log
+# jsdom + friends for the viewer JS tests; only needed locally,
+# never deployed.
+node_modules/
+# QGIS project metadata sidecar files - local to whoever edits the
+# manual future-routes GeoJSON, not useful to the deployed map.
+*.qmd
