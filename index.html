@@ -568,9 +568,8 @@
     Promise.all([
       fetch('output/routes.geojson').then(r => r.json()),
       fetch('output/meta.json').then(r => r.json()),
-      fetch('output/labels.geojson').then(r => r.ok ? r.json() : { features: [] }).catch(() => ({ features: [] })),
       fetch('output/rail.geojson').then(r => r.ok ? r.json() : { features: [] }).catch(() => ({ features: [] })),
-    ]).then(([routes, meta, labels, rail]) => {
+    ]).then(([routes, meta, rail]) => {
       // Render rail and LUAS as two stacked layers per feature: a
       // wider solid white base, then a coloured dashed overlay.
       // The dash gaps reveal the white underneath, producing the
@@ -601,10 +600,11 @@
       const groupsByCategory = {};
       for (const cat of CATEGORY_ORDER) groupsByCategory[cat] = L.layerGroup();
 
-      // PolylineDecorators that scatter outline-pill shield markers
-      // along each future route's geometry, materialised once at
-      // render time instead of pre-sampled into labels.geojson.
-      const futureDecorators = [];
+      // One PolylineDecorator per route feature. Live routes get the
+      // existing filled pill style (route-label); future routes get
+      // the outline pill with an asterisk (route-label future). All
+      // markers register into allLabels for the visibility filter.
+      const routeDecorators = [];
 
       for (const f of routes.features) {
         const base = baseStyle(f);
@@ -613,12 +613,6 @@
           l.bindTooltip(() => tooltipFor(l.feature), { className: 'route-tooltip', sticky: true });
           l.on('click', (ev) => {
             L.DomEvent.stopPropagation(ev);
-            // Clicking a shared segment selects every route that
-            // rides it, so the user sees all of those routes'
-            // continuous paths lit up at once. Same-category
-            // companions only — cross-category routes that share
-            // the same metre of road are emitted as their own
-            // (stacked) features and have to be clicked separately.
             const rs = l.feature.properties.routes || [];
             if (rs.length) applyHighlight(rs);
           });
@@ -627,50 +621,49 @@
         layer.addTo(groupsByCategory[cat]);
         allLayers.push({ layer, feature: f, baseStyle: base });
 
-        // Future-phase routes get a PolylineDecorator that paints
-        // outline-pill shield markers along the line. Five markers
-        // (offset 10% then every 20%) match the density we used to
-        // pre-sample server-side. Click on a marker = highlight the
-        // route, same as clicking the line. PolylineDecorator wants
-        // a layer with getLatLngs() - the L.GeoJSON wrapper doesn't
-        // expose that, so we hand it the inner polyline(s) directly.
+        // Attach a PolylineDecorator to every route. Five shield
+        // markers placed at 10/30/50/70/90 % along the line, click =
+        // highlight the route. PolylineDecorator wants getLatLngs(),
+        // which the L.GeoJSON wrapper doesn't expose - extract the
+        // inner polyline(s) before constructing.
         const phase = f.properties.phase || 'legacy';
-        if (futurePhases.has(phase)) {
-          const route = f.properties.route;
-          const col = f.properties.colour || '#888';
-          const innerPolylines = [];
-          layer.eachLayer(l => innerPolylines.push(l));
-          if (innerPolylines.length) {
-            const dec = L.polylineDecorator(innerPolylines, {
-              patterns: [{
-                offset: '10%',
-                repeat: '20%',
-                symbol: L.Symbol.marker({
-                  rotate: false,
-                  markerOptions: {
-                    keyboard: false,
-                    icon: L.divIcon({
-                      className: '',
-                      html: `<div class="route-label future"><span data-route="${route}" style="--route-colour:${col}">${route}*</span></div>`,
-                      iconSize: null,
-                    }),
-                  },
-                }),
-              }],
+        const route = f.properties.route;
+        const col = f.properties.colour || '#888';
+        const isFuture = futurePhases.has(phase);
+        const labelText = isFuture ? `${route}*` : route;
+        const pillStyle = isFuture
+          ? `--route-colour:${col}`
+          : `background:${col}`;
+        const pillClass = isFuture ? 'route-label future' : 'route-label';
+        const innerPolylines = [];
+        layer.eachLayer(l => innerPolylines.push(l));
+        if (innerPolylines.length) {
+          const dec = L.polylineDecorator(innerPolylines, {
+            patterns: [{
+              offset: '10%',
+              repeat: '20%',
+              symbol: L.Symbol.marker({
+                rotate: false,
+                markerOptions: {
+                  keyboard: false,
+                  icon: L.divIcon({
+                    className: '',
+                    html: `<div class="${pillClass}"><span data-route="${route}" style="${pillStyle}">${labelText}</span></div>`,
+                    iconSize: null,
+                  }),
+                },
+              }),
+            }],
+          });
+          dec.addTo(map);
+          dec.eachLayer(m => {
+            m.on('click', (ev) => {
+              L.DomEvent.stopPropagation(ev);
+              applyHighlight([route]);
             });
-            // Decorator must attach to map once so its featureGroup
-            // materialises markers; we then capture each marker for
-            // click-handler binding and the allLabels visibility list.
-            dec.addTo(map);
-            dec.eachLayer(m => {
-              m.on('click', (ev) => {
-                L.DomEvent.stopPropagation(ev);
-                applyHighlight([route]);
-              });
-              allLabels.push({ marker: m, routes: [route], phase });
-            });
-            futureDecorators.push(dec);
-          }
+            allLabels.push({ marker: m, routes: [route], phase });
+          });
+          routeDecorators.push(dec);
         }
       }
 
@@ -684,55 +677,11 @@
       railWhiteBase.addTo(map);
       railColoured.addTo(map);
 
-      // Route-name labels along each route. Hide when zoomed out
-      // to avoid clutter; show as small coloured pills at z >= 13.
-      const labelLayer = L.layerGroup();
+      // Route labels: every route's PolylineDecorator was already
+      // attached in the features loop above. Here we just control
+      // their zoom-gated visibility — hidden below LABEL_MIN_ZOOM,
+      // visible above.
       const LABEL_MIN_ZOOM = 13;
-      for (const f of (labels.features || [])) {
-        const p = f.properties;
-        // Future labels are rendered by PolylineDecorator above, so
-        // skip any prebuilt entries from labels.geojson to avoid
-        // duplicating them.
-        if (futurePhases.has(p.phase || '')) continue;
-        const [lon, lat] = f.geometry.coordinates;
-        const routes = (p.routes && p.routes.length)
-          ? p.routes
-          : (p.route_short_name ? [p.route_short_name] : []);
-        // One pill per route, each in its own category colour. A
-        // [41 (spine), 41B (radial)] cluster shows red+purple side-
-        // by-side rather than a single colour that misrepresents
-        // half the bundle.
-        const cols = (p.colours && p.colours.length === routes.length)
-          ? p.colours
-          : routes.map(() => p.colour);
-        const phase = p.phase || 'legacy';
-        const isFuture = futurePhases.has(phase);
-        // Future routes: append asterisk to indicate planned status.
-        // Outline-only style is applied via the .future CSS class.
-        // data-route attribute lets applyLabelVisibility hide
-        // individual pills when their route is replaced inside a
-        // shared-corridor label (e.g. drop the 65 pill from a
-        // [82, 65] cluster while leaving the 82 pill visible).
-        const inner = routes.map((r, i) => {
-          const text = isFuture ? `${r}*` : r;
-          if (isFuture) {
-            return `<span data-route="${r}" style="--route-colour:${cols[i]}">${text}</span>`;
-          }
-          return `<span data-route="${r}" style="background:${cols[i]}">${text}</span>`;
-        }).join('');
-        const icon = L.divIcon({
-          className: '',
-          html: `<div class="route-label${isFuture ? ' future' : ''}">${inner}</div>`,
-          iconSize: null,
-        });
-        const marker = L.marker([lat, lon], { icon, keyboard: false });
-        marker.on('click', (ev) => {
-          L.DomEvent.stopPropagation(ev);
-          if (routes.length) applyHighlight(routes);
-        });
-        labelLayer.addLayer(marker);
-        allLabels.push({ marker, routes, phase });
-      }
       function applyLabelVisibility() {
         for (const lbl of allLabels) {
           const phaseHidden = futurePhases.has(lbl.phase)
@@ -770,21 +719,15 @@
       function syncLabels() {
         const showLabels = map.getZoom() >= LABEL_MIN_ZOOM;
         if (showLabels) {
-          if (!map.hasLayer(labelLayer)) {
-            labelLayer.addTo(map);
-            // Markers' DOM elements only exist after they're added,
-            // so reapply visibility filter now.
-            applyLabelVisibility();
-          }
-          for (const dec of futureDecorators) {
+          for (const dec of routeDecorators) {
             if (!map.hasLayer(dec)) dec.addTo(map);
           }
-          // Decorator markers re-mounted on add — re-apply filter so
-          // future visibility/replacement state stays consistent.
+          // Decorator markers re-mount on add — DOM is fresh, so
+          // re-apply visibility filter to pick up active future
+          // phases and replacement state.
           applyLabelVisibility();
         } else {
-          if (map.hasLayer(labelLayer)) map.removeLayer(labelLayer);
-          for (const dec of futureDecorators) {
+          for (const dec of routeDecorators) {
             if (map.hasLayer(dec)) map.removeLayer(dec);
           }
         }

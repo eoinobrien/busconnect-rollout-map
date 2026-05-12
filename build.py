@@ -121,19 +121,15 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     offset_categories = args.offset and not args.no_offset
-    if args.no_labels:
-        routes, meta = build(
-            Path(args.gtfs), args.date,
-            with_labels=False,
-            offset_categories=offset_categories,
-        )
-        labels = None
-    else:
-        routes, meta, labels = build(
-            Path(args.gtfs), args.date,
-            with_labels=True,
-            offset_categories=offset_categories,
-        )
+    # labels.geojson is no longer used by the viewer (PolylineDecorator
+    # renders all route shields at runtime), so we skip the
+    # stop-clustering step regardless of the legacy --no-labels flag.
+    routes, meta = build(
+        Path(args.gtfs), args.date,
+        with_labels=False,
+        offset_categories=offset_categories,
+    )
+    labels = None
 
     future_count = 0
     future_label_count = 0
