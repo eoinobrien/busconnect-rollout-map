@@ -323,6 +323,13 @@
 
     const HIDDEN_STYLE = { opacity: 0, weight: 0, fillOpacity: 0 };
 
+    // Active-future phases that *contain* at least one currently
+    // highlighted route. Used to decide whether peer routes in an
+    // active future phase should fall to dim (when the user has drilled
+    // into the phase) or stay in baseStyle (when the highlight lives
+    // elsewhere and the phase is just a network preview).
+    let _phasesInHighlight = new Set();
+
     function recomputeHiddenReplacedRoutes() {
       hiddenReplacedRoutes.clear();
       const phasesMeta = (window._phasesMeta || {});
@@ -330,6 +337,18 @@
         const info = phasesMeta[pid];
         if (!info) continue;
         for (const r of (info.replacing || [])) hiddenReplacedRoutes.add(r);
+      }
+    }
+
+    function recomputePhasesInHighlight() {
+      _phasesInHighlight = new Set();
+      if (!selectedRoutes) return;
+      const routePhase = window._routePhase || {};
+      for (const r of selectedRoutes) {
+        const p = routePhase[r];
+        if (p && futurePhases.has(p) && visibleFuturePhases.has(p)) {
+          _phasesInHighlight.add(p);
+        }
       }
     }
 
@@ -350,13 +369,16 @@
       if (fRoutes.some(r => selectedRoutes.has(r))) {
         return highlightStyle(item.baseStyle);
       }
-      // Routes in an active future phase are shown because the user
-      // explicitly toggled the phase on - they're not part of the
-      // legacy highlight selection, but they shouldn't fall to dim
-      // either (otherwise the future preview disappears whenever a
-      // legacy phase is also selected). Render them in baseStyle.
       const phase = item.feature.properties.phase || 'legacy';
-      if (futurePhases.has(phase) && visibleFuturePhases.has(phase)) {
+      // Routes in an active future phase render in baseStyle as long
+      // as the highlight isn't on a route *within* that phase. As soon
+      // as the user picks a route inside phase X, the rest of X falls
+      // to dim so the picked one stands out (scenario 7). When the
+      // highlight is elsewhere - legacy route, different future phase
+      // - active future phases stay visible alongside (scenarios 6, 8).
+      if (futurePhases.has(phase)
+          && visibleFuturePhases.has(phase)
+          && !_phasesInHighlight.has(phase)) {
         return item.baseStyle;
       }
       return dimStyle();
@@ -364,6 +386,7 @@
 
     function applyVisibility() {
       recomputeHiddenReplacedRoutes();
+      recomputePhasesInHighlight();
       for (const item of allLayers) {
         item.hidden = isFeatureHidden(item.feature);
         item.layer.setStyle(styleForItem(item));
@@ -598,14 +621,14 @@
           const replaced = lbl.routes.some(r => hiddenReplacedRoutes.has(r));
           let visible = !phaseHidden && !replaced;
           if (visible && selectedRoutes) {
-            // Same exemption as the layer style: a label belonging to
-            // a user-activated future phase stays visible alongside
-            // the highlight on legacy routes.
+            const inHighlight = lbl.routes.some(r => selectedRoutes.has(r));
             const isFutureActive = futurePhases.has(lbl.phase)
               && visibleFuturePhases.has(lbl.phase);
-            if (!isFutureActive) {
-              visible = lbl.routes.some(r => selectedRoutes.has(r));
-            }
+            const phaseInHighlight = _phasesInHighlight.has(lbl.phase);
+            // Show this label if it's the highlight target; or if its
+            // phase is an active future phase that the highlight isn't
+            // drilling into (network-preview mode).
+            visible = inHighlight || (isFutureActive && !phaseInHighlight);
           }
           const el = lbl.marker.getElement();
           if (el) el.style.display = visible ? '' : 'none';
