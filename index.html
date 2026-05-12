@@ -222,7 +222,7 @@
       color: var(--route-colour, #555);
       border: 1px solid var(--route-colour, #555);
       padding: 0 4px;
-      border-radius: 2px;
+      border-radius: 10px;
       margin: 0 1px;
     }
 
@@ -641,7 +641,6 @@
         const route = f.properties.route;
         const col = f.properties.colour || '#888';
         const isFuture = futurePhases.has(phase);
-        const labelText = isFuture ? `${route}*` : route;
         const pillStyle = isFuture
           ? `--route-colour:${col}`
           : `background:${col}`;
@@ -659,7 +658,7 @@
                   keyboard: false,
                   icon: L.divIcon({
                     className: '',
-                    html: `<div class="${pillClass}"><span data-route="${route}" style="${pillStyle}">${labelText}</span></div>`,
+                    html: `<div class="${pillClass}"><span data-route="${route}" style="${pillStyle}">${route}</span></div>`,
                     iconSize: null,
                   }),
                 },
