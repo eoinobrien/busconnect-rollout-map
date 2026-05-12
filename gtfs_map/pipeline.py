@@ -121,6 +121,8 @@ def build(
     date_iso: str,
     with_labels: bool = False,
     rollout_phases_path: Path | None = None,
+    *,
+    offset_categories: bool = True,
 ):
     """GTFS -> GeoJSON pipeline with per-category segment bundling.
 
@@ -286,14 +288,15 @@ def build(
         # slots are centered on 0 so the bundle's apparent centerline
         # stays close to the underlying road. Order is taken from
         # _CATEGORY_OFFSET_ORDER for stability.
-        cats_here = sorted(
-            {short_to_category[synth_to_short[s]] for s in synth_members},
-            key=lambda c: _CATEGORY_OFFSET_ORDER.index(c),
-        )
-        n_cats = len(cats_here)
-        slot = cats_here.index(cat) - (n_cats - 1) / 2
-        if slot != 0:
-            sub = _offset_line(sub, slot * OFFSET_SPACING_M)
+        if offset_categories:
+            cats_here = sorted(
+                {short_to_category[synth_to_short[s]] for s in synth_members},
+                key=lambda c: _CATEGORY_OFFSET_ORDER.index(c),
+            )
+            n_cats = len(cats_here)
+            slot = cats_here.index(cat) - (n_cats - 1) / 2
+            if slot != 0:
+                sub = _offset_line(sub, slot * OFFSET_SPACING_M)
 
         properties: dict = {
             # `route` (singular): the walker whose own GTFS shape

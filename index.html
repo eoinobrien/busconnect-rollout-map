@@ -120,6 +120,53 @@
       transform: rotate(45deg);
     }
 
+    .panel .search-input {
+      width: 100%;
+      box-sizing: border-box;
+      padding: 5px 7px;
+      border: 1px solid #ccc;
+      border-radius: 3px;
+      font-size: 12px;
+      font-family: inherit;
+    }
+    .panel .search-input:focus { outline: none; border-color: #f5b800; }
+    .panel .search-results {
+      max-height: 180px;
+      overflow-y: auto;
+      margin-top: 6px;
+    }
+    .panel .search-empty {
+      color: #999;
+      font-size: 11px;
+      font-style: italic;
+      padding: 4px 6px;
+    }
+    .panel .search-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 6px;
+      margin: 1px -4px;
+      border-radius: 3px;
+      cursor: pointer;
+    }
+    .panel .search-row:hover { background: #f3f3f3; }
+    .panel .search-row .swatch {
+      width: 14px; height: 3px; flex-shrink: 0;
+    }
+    .panel .search-route {
+      font-weight: 700;
+      flex-shrink: 0;
+      min-width: 32px;
+    }
+    .panel .search-long {
+      font-size: 11px;
+      color: #555;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .leaflet-tooltip.route-tooltip { font-size: 12px; padding: 4px 8px; }
 
     .route-label {
@@ -139,6 +186,22 @@
       padding: 1px 5px;
       color: white;
       text-align: center;
+    }
+    /* Future routes: outline-only fill so a planned A1* reads as
+       hollow next to a live A1. Per-span border colour comes from
+       the inline style (set with --route-colour); white background
+       keeps the asterisk and id legible against the map. */
+    .route-label.future {
+      background: white;
+      box-shadow: none;
+    }
+    .route-label.future > span {
+      background: white !important;
+      color: var(--route-colour, #555);
+      border: 1px solid var(--route-colour, #555);
+      padding: 0 4px;
+      border-radius: 2px;
+      margin: 0 1px;
     }
 
     .clear-highlight {
@@ -421,12 +484,19 @@
         const cols = (p.colours && p.colours.length === routes.length)
           ? p.colours
           : routes.map(() => p.colour);
-        const inner = routes.map((r, i) =>
-          `<span style="background:${cols[i]}">${r}</span>`
-        ).join('');
+        const isFuture = p.phase === 'future';
+        // Future routes: append asterisk to indicate planned status.
+        // Outline-only style is applied via the .future CSS class.
+        const inner = routes.map((r, i) => {
+          const text = isFuture ? `${r}*` : r;
+          if (isFuture) {
+            return `<span style="--route-colour:${cols[i]}">${text}</span>`;
+          }
+          return `<span style="background:${cols[i]}">${text}</span>`;
+        }).join('');
         const icon = L.divIcon({
           className: '',
-          html: `<div class="route-label">${inner}</div>`,
+          html: `<div class="route-label${isFuture ? ' future' : ''}">${inner}</div>`,
           iconSize: null,
         });
         const marker = L.marker([lat, lon], { icon, keyboard: false });
@@ -543,6 +613,12 @@
           <h3>Dublin city bus network</h3>
           <div class="panel-sub">${meta.reference_date} · ${meta.route_count} routes</div>
           <div class="section">
+            <div class="section-title">Search routes</div>
+            <input type="text" class="search-input" placeholder="route, destination, or agency"
+                   autocomplete="off" spellcheck="false" />
+            <div class="search-results"></div>
+          </div>
+          <div class="section">
             <div class="section-title">Route categories</div>
             ${catRows}
           </div>
@@ -581,6 +657,72 @@
             }
             applyPhaseSelection();
           });
+        });
+
+        // Build a compact route index for the search box. One entry per
+        // route_id with its long_name + agency + category colour, harvested
+        // from whichever feature first carries each id.
+        const routeIndex = new Map();
+        for (const item of allLayers) {
+          const p = item.feature.properties;
+          const ids = p.routes || (p.route ? [p.route] : []);
+          for (const rid of ids) {
+            if (routeIndex.has(rid)) continue;
+            routeIndex.set(rid, {
+              id: rid,
+              long: p.route_long_name || '',
+              agency: p.agency || '',
+              colour: p.colour || '#888',
+              phase: p.phase || '',
+            });
+          }
+        }
+        const routeIndexList = Array.from(routeIndex.values())
+          .sort((a, b) => compareRouteShort(a.id, b.id));
+
+        const searchInput = div.querySelector('.search-input');
+        const searchResults = div.querySelector('.search-results');
+
+        function renderSearchResults(query) {
+          const q = (query || '').trim().toLowerCase();
+          if (!q) {
+            searchResults.innerHTML = '';
+            return;
+          }
+          const matches = routeIndexList.filter(r =>
+            r.id.toLowerCase().includes(q)
+            || r.long.toLowerCase().includes(q)
+            || r.agency.toLowerCase().includes(q)
+          ).slice(0, 25);
+          if (!matches.length) {
+            searchResults.innerHTML = '<div class="search-empty">No routes match.</div>';
+            return;
+          }
+          searchResults.innerHTML = matches.map(r => `
+            <div class="search-row" data-route="${r.id}">
+              <span class="swatch" style="background:${r.colour}"></span>
+              <span class="search-route">${r.id}</span>
+              <span class="search-long">${r.long || r.agency || ''}</span>
+            </div>
+          `).join('');
+          searchResults.querySelectorAll('[data-route]').forEach(row => {
+            row.addEventListener('click', () => {
+              const rid = row.getAttribute('data-route');
+              applyHighlight([rid]);
+            });
+          });
+        }
+
+        searchInput.addEventListener('input', e => renderSearchResults(e.target.value));
+        searchInput.addEventListener('keydown', e => {
+          if (e.key === 'Enter') {
+            const first = searchResults.querySelector('[data-route]');
+            if (first) first.click();
+          } else if (e.key === 'Escape') {
+            searchInput.value = '';
+            searchResults.innerHTML = '';
+            searchInput.blur();
+          }
         });
 
         return div;
