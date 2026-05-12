@@ -347,9 +347,19 @@
       if (item.hidden) return HIDDEN_STYLE;
       if (!selectedRoutes) return item.baseStyle;
       const fRoutes = item.feature.properties.routes || [];
-      return fRoutes.some(r => selectedRoutes.has(r))
-        ? highlightStyle(item.baseStyle)
-        : dimStyle();
+      if (fRoutes.some(r => selectedRoutes.has(r))) {
+        return highlightStyle(item.baseStyle);
+      }
+      // Routes in an active future phase are shown because the user
+      // explicitly toggled the phase on - they're not part of the
+      // legacy highlight selection, but they shouldn't fall to dim
+      // either (otherwise the future preview disappears whenever a
+      // legacy phase is also selected). Render them in baseStyle.
+      const phase = item.feature.properties.phase || 'legacy';
+      if (futurePhases.has(phase) && visibleFuturePhases.has(phase)) {
+        return item.baseStyle;
+      }
+      return dimStyle();
     }
 
     function applyVisibility() {
@@ -588,7 +598,14 @@
           const replaced = lbl.routes.some(r => hiddenReplacedRoutes.has(r));
           let visible = !phaseHidden && !replaced;
           if (visible && selectedRoutes) {
-            visible = lbl.routes.some(r => selectedRoutes.has(r));
+            // Same exemption as the layer style: a label belonging to
+            // a user-activated future phase stays visible alongside
+            // the highlight on legacy routes.
+            const isFutureActive = futurePhases.has(lbl.phase)
+              && visibleFuturePhases.has(lbl.phase);
+            if (!isFutureActive) {
+              visible = lbl.routes.some(r => selectedRoutes.has(r));
+            }
           }
           const el = lbl.marker.getElement();
           if (el) el.style.display = visible ? '' : 'none';
