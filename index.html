@@ -186,7 +186,7 @@
 
     .route-label {
       display: inline-flex;
-      border-radius: 3px;
+      border-radius: 10px;
       overflow: hidden;
       font-size: 10px;
       font-weight: 700;
@@ -596,6 +596,21 @@
       // it's in scope when syncLabels first runs below.
       const visibleCategories = new Set(LEGEND_ORDER);
 
+      // Populate futurePhases BEFORE the features loop. The loop's
+      // styling branch ("isFuture ? outline pill : filled pill")
+      // reads futurePhases.has(phase); without populating it now,
+      // every future route would be rendered with the live filled
+      // pill (no asterisk) and only later be hidden by visibility.
+      const phasesMetaEarly = meta.rollout_phases || {};
+      window._phasesMeta = phasesMetaEarly;
+      futurePhases.clear();
+      for (const [pid, info] of Object.entries(phasesMetaEarly)) {
+        if (info && !/^\d{4}-\d{2}-\d{2}$/.test(info.date || '')) {
+          futurePhases.add(pid);
+        }
+      }
+      window._routePhase = meta.route_phase || {};
+
       // One PolylineDecorator per route feature. Live routes get the
       // existing filled pill style (route-label); future routes get
       // the outline pill with an asterisk (route-label future). All
@@ -771,11 +786,11 @@
         }
         return (ia.date || '') < (ib.date || '') ? -1 : (ia.date || '') > (ib.date || '') ? 1 : 0;
       });
+      // futurePhases was already populated up at the top of .then so
+      // the features loop's styling branch could see it. Re-populate
+      // here is a no-op safety net for any phases that only appeared
+      // after meta finished loading (none in practice).
       window._phasesMeta = phasesMeta;
-      futurePhases.clear();
-      for (const [pid, info] of Object.entries(phasesMeta)) {
-        if (info && _isFutureDate(info.date)) futurePhases.add(pid);
-      }
       const hour = meta.high_frequency_hour;
       const hourLabel = hour === 0 ? 'midnight' : hour === 12 ? 'noon' : hour < 12 ? `${hour} am` : `${hour - 12} pm`;
       const hfCount = meta.high_frequency_route_count || 0;
@@ -989,6 +1004,28 @@
       // visible. applyVisibility hides any phase=future features and
       // recomputes label display.
       applyVisibility();
+
+      // One-time runtime sanity check. If this prints any non-zero
+      // count of visible future labels right after init, the wiring
+      // is broken and the rest of the visibility logic won't save us.
+      try {
+        const stat = { futureTotal: 0, futureVisible: 0, futurePhasesSeen: new Set() };
+        for (const lbl of allLabels) {
+          if (!futurePhases.has(lbl.phase)) continue;
+          stat.futureTotal++;
+          stat.futurePhasesSeen.add(lbl.phase);
+          const el = lbl.marker && lbl.marker.getElement && lbl.marker.getElement();
+          if (el && el.style.display !== 'none') stat.futureVisible++;
+        }
+        console.log('[map] future labels on first load:',
+          { total: stat.futureTotal, visible: stat.futureVisible,
+            phases: [...stat.futurePhasesSeen] });
+        if (stat.futureVisible > 0) {
+          console.warn('[map] expected 0 visible future labels at load; check applyLabelVisibility wiring');
+        }
+      } catch (e) {
+        console.warn('[map] sanity check failed', e);
+      }
 
       map.on('click', () => { if (selectedRoutes) clearHighlight(); });
     }).catch(err => {
