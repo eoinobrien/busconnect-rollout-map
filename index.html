@@ -600,6 +600,12 @@
       const groupsByCategory = {};
       for (const cat of CATEGORY_ORDER) groupsByCategory[cat] = L.layerGroup();
 
+      // Track which categories the user has visible. The panel rows
+      // mutate this; applyLabelVisibility reads it so shield markers
+      // hide alongside the lines they belong to. Declared up here so
+      // it's in scope when syncLabels first runs below.
+      const visibleCategories = new Set(LEGEND_ORDER);
+
       // One PolylineDecorator per route feature. Live routes get the
       // existing filled pill style (route-label); future routes get
       // the outline pill with an asterisk (route-label future). All
@@ -661,7 +667,7 @@
               L.DomEvent.stopPropagation(ev);
               applyHighlight([route]);
             });
-            allLabels.push({ marker: m, routes: [route], phase });
+            allLabels.push({ marker: m, routes: [route], phase, category: cat });
           });
           routeDecorators.push(dec);
         }
@@ -686,9 +692,11 @@
         for (const lbl of allLabels) {
           const phaseHidden = futurePhases.has(lbl.phase)
             && !visibleFuturePhases.has(lbl.phase);
+          const categoryHidden = lbl.category
+            && !visibleCategories.has(lbl.category);
           const el = lbl.marker.getElement();
           if (!el) continue;
-          if (phaseHidden) { el.style.display = 'none'; continue; }
+          if (phaseHidden || categoryHidden) { el.style.display = 'none'; continue; }
 
           // Per-pill visibility. A pill hides when its route is
           // replaced by an active future phase the label doesn't
@@ -777,7 +785,6 @@
       const hfCount = meta.high_frequency_route_count || 0;
       const hfThreshold = meta.high_frequency_threshold;
 
-      const visibleCategories = new Set(LEGEND_ORDER);
       const selectedPhases = new Set();
       window._selectedPhases = selectedPhases;
       // Expose the route-to-phase map so the tooltip helper can
@@ -869,7 +876,8 @@
           </div>` : ''}
         `;
 
-        // Category rows toggle layer visibility.
+        // Category rows toggle layer visibility for both the line
+        // group and any shield markers belonging to that category.
         div.querySelectorAll('[data-cat]').forEach(row => {
           row.addEventListener('click', () => {
             const cat = row.getAttribute('data-cat');
@@ -882,6 +890,7 @@
               groupsByCategory[cat].addTo(map);
               row.classList.remove('inactive');
             }
+            applyLabelVisibility();
           });
         });
 
@@ -987,9 +996,13 @@
 
       map.on('click', () => { if (selectedRoutes) clearHighlight(); });
     }).catch(err => {
-      console.error(err);
+      console.error('Map init failed:', err);
+      // Surface the actual error message so we don't blame the data
+      // fetch for runtime errors that happen after it succeeds.
+      const detail = err && err.message ? ` (${err.message})` : '';
       showError(
-        'Could not load output/routes.geojson. Run "python build.py" then serve via "python -m http.server --bind 127.0.0.1" and reload.'
+        'Map failed to initialise' + detail
+        + '. Open the browser console for the full stack trace.'
       );
     });
   </script>
