@@ -269,6 +269,12 @@
     const LEGEND_ORDER = ['spine', 'orbital', 'local', 'peak', 'radial'];
 
     const map = L.map('map', { preferCanvas: true }).setView([53.345, -6.26], 11);
+    // Move OSM / CARTO / TfI attribution to bottom-left so the
+    // bottom-right corner stays clear (we use that area for future
+    // panel overflow scroll). OSM and CARTO both require the
+    // attribution to be visible and legible, but neither pins its
+    // position - bottom-left meets that bar.
+    map.attributionControl.setPosition('bottomleft');
     window.map = map;
     const renderer = L.canvas({ padding: 0.4 });
 
