@@ -251,6 +251,85 @@
       font-size: 13px;
       max-width: 90vw;
     }
+
+    /* Mobile: panel becomes a bottom sheet anchored to the screen
+       edge. Collapsed shows just the header (title + drag handle);
+       tap to expand the body to ~65vh with internal scroll. Desktop
+       ignores all of this (no media match) and keeps the topright
+       sidebar. */
+    @media (max-width: 768px) {
+      .leaflet-top.leaflet-right {
+        top: auto;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        pointer-events: none;
+        /* Leaflet places .leaflet-bottom.leaflet-left (attribution)
+           after this container in the DOM, so at equal z-index the
+           attribution paints on top of the panel. Lift the panel
+           above it so the expanded sheet cleanly covers the credits;
+           the collapsed state shows them just above the header. */
+        z-index: 1001;
+      }
+      .leaflet-top.leaflet-right .leaflet-control {
+        margin: 0;
+        pointer-events: auto;
+      }
+      .panel {
+        width: 100%;
+        max-width: 100%;
+        padding: 0;
+        border-radius: 14px 14px 0 0;
+        box-shadow: 0 -2px 12px rgba(0,0,0,0.18);
+        overflow: hidden;
+      }
+      .panel-header {
+        padding: 8px 14px 10px;
+        cursor: pointer;
+        user-select: none;
+        -webkit-tap-highlight-color: transparent;
+        background: rgba(255,255,255,0.98);
+      }
+      .panel-header::before {
+        content: '';
+        display: block;
+        width: 36px;
+        height: 4px;
+        margin: 0 auto 8px;
+        background: #d4d4d4;
+        border-radius: 2px;
+      }
+      .panel-body {
+        /* Collapse / expand via max-height transition. border-box
+           keeps padding inside the height budget so the body never
+           overflows the panel's overflow:hidden boundary - that was
+           clipping the bottom of the phase list. */
+        box-sizing: border-box;
+        max-height: 0;
+        padding: 0 14px;
+        overflow: hidden;
+        transition: max-height 0.3s ease-out, padding 0.3s ease-out;
+      }
+      .panel.expanded .panel-body {
+        max-height: 65vh;
+        padding: 0 14px 14px;
+        overflow-y: auto;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+      }
+      /* Search results expand to fit available sheet height rather
+         than the desktop's fixed 180px box. */
+      .panel .search-results { max-height: none; }
+
+      /* Attribution sits at bottom-left of the map; the collapsed
+         sheet header now occupies that strip. Push the attribution
+         container above the header so OSM/CARTO/TfI credits stay
+         legible in the default (collapsed) state. ~70px matches the
+         measured header height including its drag-handle. */
+      .leaflet-bottom.leaflet-left {
+        bottom: 72px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -871,29 +950,33 @@
         }
 
         div.innerHTML = `
-          <h3>Dublin city bus network</h3>
-          <div class="panel-sub">${meta.reference_date} · ${meta.route_count} routes</div>
-          <div class="section">
-            <div class="section-title">Search routes</div>
-            <input type="text" class="search-input" placeholder="route, destination, or agency"
-                   autocomplete="off" spellcheck="false" />
-            <div class="search-results"></div>
+          <div class="panel-header">
+            <h3>Dublin city bus network</h3>
+            <div class="panel-sub">${meta.reference_date} · ${meta.route_count} routes</div>
           </div>
-          <div class="section">
-            <div class="section-title">Route categories</div>
-            ${catRows}
+          <div class="panel-body">
+            <div class="section">
+              <div class="section-title">Search routes</div>
+              <input type="text" class="search-input" placeholder="route, destination, or agency"
+                     autocomplete="off" spellcheck="false" />
+              <div class="search-results"></div>
+            </div>
+            <div class="section">
+              <div class="section-title">Route categories</div>
+              ${catRows}
+            </div>
+            ${liveRows ? `<div class="section">
+              <div class="section-title">BusConnects phase</div>
+              ${liveRows}
+            </div>` : ''}
+            ${futureRows ? `<div class="section future-section">
+              <div class="section-title">Future / potential phases</div>
+              <div class="section-note">Routes and rollout dates here are
+                proposals and may change. Tap a phase to preview the
+                planned network; routes it replaces will hide.</div>
+              ${futureRows}
+            </div>` : ''}
           </div>
-          ${liveRows ? `<div class="section">
-            <div class="section-title">BusConnects phase</div>
-            ${liveRows}
-          </div>` : ''}
-          ${futureRows ? `<div class="section future-section">
-            <div class="section-title">Future / potential phases</div>
-            <div class="section-note">Routes and rollout dates here are
-              proposals and may change. Tap a phase to preview the
-              planned network; routes it replaces will hide.</div>
-            ${futureRows}
-          </div>` : ''}
         `;
 
         // Category rows toggle layer visibility for both the line
@@ -960,8 +1043,24 @@
         const routeIndexList = Array.from(routeIndex.values())
           .sort((a, b) => compareRouteShort(a.id, b.id));
 
+        // Mobile bottom-sheet toggle: tapping the header expands /
+        // collapses the panel. The .expanded class is only styled
+        // under the mobile media query, so this handler is a no-op
+        // on desktop (class toggles but nothing references it).
+        const panelHeader = div.querySelector('.panel-header');
+        panelHeader.addEventListener('click', () => {
+          div.classList.toggle('expanded');
+        });
+
         const searchInput = div.querySelector('.search-input');
         const searchResults = div.querySelector('.search-results');
+
+        // Focusing the search input on mobile should expand the
+        // sheet so the user can see what they're typing into - the
+        // input is inside .panel-body which is hidden when collapsed.
+        searchInput.addEventListener('focus', () => {
+          div.classList.add('expanded');
+        });
 
         function renderSearchResults(query) {
           const q = (query || '').trim().toLowerCase();
@@ -1039,7 +1138,13 @@
         console.warn('[map] sanity check failed', e);
       }
 
-      map.on('click', () => { if (selectedRoutes) clearHighlight(); });
+      map.on('click', () => {
+        if (selectedRoutes) clearHighlight();
+        // Collapse the mobile sheet when the user taps the map.
+        // Harmless on desktop (no media-query rule consumes the class).
+        const panel = document.querySelector('.panel');
+        if (panel) panel.classList.remove('expanded');
+      });
     }).catch(err => {
       console.error('Map init failed:', err);
       // Surface the actual error message so we don't blame the data
