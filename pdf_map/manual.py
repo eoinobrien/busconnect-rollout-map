@@ -51,7 +51,10 @@ def _category_for_routes(route_ids: list[str]) -> str:
     return min(cats, key=lambda c: priority.get(c, 99))
 
 
-def load_manual_future_features(path: Path | str) -> list[dict]:
+def load_manual_future_features(
+    path: Path | str,
+    short_to_phase: dict[str, str] | None = None,
+) -> list[dict]:
     """Read the manual GeoJSON and return routes.geojson-shaped features.
 
     - MultiLineString geometry preserved as-is so each road-snapped
@@ -60,13 +63,17 @@ def load_manual_future_features(path: Path | str) -> list[dict]:
     - Empty-geometry placeholder features (geometry coordinates == [])
       are dropped.
     - Features whose `route no` is missing or unparseable are also
-      dropped, with the count returned via the second element of the
-      tuple so the build can report it.
+      dropped.
+    - When `short_to_phase` is provided, each feature's phase is
+      looked up from the user's rollout-phases.json (so a future route
+      lands in "8 (Potential)", "11 (Potential)", etc.). Routes
+      without an explicit phase fall back to the generic FUTURE_PHASE.
     """
     path = Path(path)
     if not path.exists():
         return []
     raw = json.loads(path.read_text(encoding="utf-8"))
+    short_to_phase = short_to_phase or {}
 
     features: list[dict] = []
     for f in raw.get("features", []):
@@ -84,6 +91,7 @@ def load_manual_future_features(path: Path | str) -> list[dict]:
         primary = route_ids[0]
         category = _category_for_routes(route_ids)
         colour = category_colour(category)
+        phase = short_to_phase.get(primary, FUTURE_PHASE)
 
         features.append({
             "type": "Feature",
@@ -95,7 +103,7 @@ def load_manual_future_features(path: Path | str) -> list[dict]:
                 "agency": "BusConnects (planned)",
                 "category": category,
                 "colour": colour,
-                "phase": FUTURE_PHASE,
+                "phase": phase,
             },
         })
     return features
@@ -152,13 +160,11 @@ _LABEL_FRACTIONS: tuple[float, ...] = (0.1, 0.3, 0.5, 0.7, 0.9)
 def build_future_labels(features: list[dict]) -> list[dict]:
     """Return label-point features matching labels.geojson's schema.
 
-    Each future route_id contributes a handful of points sampled
-    along its MultiLineString. Properties:
-      routes: [route_id]
-      colours: [feature's category colour]
-      category, colour, phase: passed through from the route feature
-    The viewer reads `phase == "future"` to switch to the outline-
-    only pill style and append the asterisk suffix.
+    Each route feature contributes a handful of points sampled along
+    its MultiLineString. Phase is inherited from the source feature,
+    so a route assigned to "11 (Potential)" gets labels tagged
+    "11 (Potential)" too - the viewer uses phase + rollout_phases.date
+    to decide outline-only styling and visibility defaults.
     """
     labels: list[dict] = []
     for f in features:
@@ -173,6 +179,7 @@ def build_future_labels(features: list[dict]) -> list[dict]:
         routes = p.get("routes", [])
         colour = p.get("colour")
         category = p.get("category")
+        phase = p.get("phase", FUTURE_PHASE)
         for lon, lat in pts:
             labels.append({
                 "type": "Feature",
@@ -182,7 +189,7 @@ def build_future_labels(features: list[dict]) -> list[dict]:
                     "colours": [colour] * len(routes),
                     "category": category,
                     "colour": colour,
-                    "phase": FUTURE_PHASE,
+                    "phase": phase,
                 },
             })
     return labels

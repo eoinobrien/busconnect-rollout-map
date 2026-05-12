@@ -271,9 +271,21 @@
       document.body.appendChild(div);
     }
 
-    const allLayers = [];   // { layer, feature, baseStyle }
-    const allLabels = [];   // { marker, routes }
+    const allLayers = [];   // { layer, feature, baseStyle, hidden }
+    const allLabels = [];   // { marker, routes, phase }
     let selectedRoutes = null;
+
+    // Future-network state.
+    //  - futurePhases: phase ids declared with date === "future" in
+    //    rollout-phases.json. Populated once meta loads.
+    //  - visibleFuturePhases: subset of futurePhases the user has
+    //    explicitly opted in to. Default empty (hide planned routes).
+    //  - hiddenReplacedRoutes: route ids that are about to be replaced
+    //    by an active future phase; computed from each active phase's
+    //    `replacing` array.
+    const futurePhases = new Set();
+    const visibleFuturePhases = new Set();
+    const hiddenReplacedRoutes = new Set();
 
     function weightForRoutes(n) {
       // Stroke width grows with how many routes share this category
@@ -301,36 +313,89 @@
       return { ...base, weight: (base.weight || 2.5) + 2, opacity: 1 };
     }
 
+    const HIDDEN_STYLE = { opacity: 0, weight: 0, fillOpacity: 0 };
+
+    function recomputeHiddenReplacedRoutes() {
+      hiddenReplacedRoutes.clear();
+      const phasesMeta = (window._phasesMeta || {});
+      for (const pid of visibleFuturePhases) {
+        const info = phasesMeta[pid];
+        if (!info) continue;
+        for (const r of (info.replacing || [])) hiddenReplacedRoutes.add(r);
+      }
+    }
+
+    function isFeatureHidden(feature) {
+      const p = feature.properties || {};
+      const phase = p.phase || 'legacy';
+      if (futurePhases.has(phase) && !visibleFuturePhases.has(phase)) {
+        return true;
+      }
+      const fRoutes = p.routes || (p.route ? [p.route] : []);
+      return fRoutes.some(r => hiddenReplacedRoutes.has(r));
+    }
+
+    function styleForItem(item) {
+      if (item.hidden) return HIDDEN_STYLE;
+      if (!selectedRoutes) return item.baseStyle;
+      const fRoutes = item.feature.properties.routes || [];
+      return fRoutes.some(r => selectedRoutes.has(r))
+        ? highlightStyle(item.baseStyle)
+        : dimStyle();
+    }
+
+    function applyVisibility() {
+      recomputeHiddenReplacedRoutes();
+      for (const item of allLayers) {
+        item.hidden = isFeatureHidden(item.feature);
+        item.layer.setStyle(styleForItem(item));
+        if (!item.hidden && selectedRoutes && item.layer.bringToFront) {
+          const fRoutes = item.feature.properties.routes || [];
+          if (fRoutes.some(r => selectedRoutes.has(r))) item.layer.bringToFront();
+        }
+      }
+      if (window._applyLabelVisibility) window._applyLabelVisibility();
+      updateFuturePhaseRows();
+    }
+
     function applyHighlight(routeNames) {
       // Highlight every feature whose `routes` membership intersects
       // the selection. With per-category collapse, a clicked route
-      // lights up every category-line that carries it.
+      // lights up every category-line that carries it. Selecting a
+      // route that belongs to a future phase auto-activates that
+      // phase's visibility so the user sees the planned alignment.
       selectedRoutes = new Set(routeNames);
-      for (const item of allLayers) {
-        const fRoutes = item.feature.properties.routes || [];
-        if (fRoutes.some(r => selectedRoutes.has(r))) {
-          item.layer.setStyle(highlightStyle(item.baseStyle));
-          if (item.layer.bringToFront) item.layer.bringToFront();
-        } else {
-          item.layer.setStyle(dimStyle());
-        }
+      const routePhase = window._routePhase || {};
+      for (const r of routeNames) {
+        const p = routePhase[r];
+        if (p && futurePhases.has(p)) visibleFuturePhases.add(p);
       }
-      // Hide labels of unselected routes; show only labels whose
-      // `routes` overlap the selection. Bundled labels (e.g. C1/C2)
-      // remain visible if any of their routes is selected.
-      if (window._applyLabelVisibility) window._applyLabelVisibility();
+      applyVisibility();
       document.getElementById('clearHighlight').style.display = 'block';
     }
 
     function clearHighlight() {
       selectedRoutes = null;
-      for (const item of allLayers) item.layer.setStyle(item.baseStyle);
-      if (window._applyLabelVisibility) window._applyLabelVisibility();
-      // Reset multi-select phase rows in the panel.
+      // Roll back any future phase the highlight auto-activated, so
+      // we return to the "current network only" default.
+      visibleFuturePhases.clear();
       if (window._selectedPhases) window._selectedPhases.clear();
       document.querySelectorAll('.panel [data-phase].active')
         .forEach(r => r.classList.remove('active'));
+      applyVisibility();
       document.getElementById('clearHighlight').style.display = 'none';
+    }
+
+    function updateFuturePhaseRows() {
+      // Reflect visibleFuturePhases state on the panel rows; rows
+      // for future phases use the same .active class as the legacy
+      // highlight rows for visual consistency.
+      document.querySelectorAll('.panel [data-phase]').forEach(row => {
+        const pid = row.getAttribute('data-phase');
+        if (!futurePhases.has(pid)) return;
+        if (visibleFuturePhases.has(pid)) row.classList.add('active');
+        else row.classList.remove('active');
+      });
     }
 
     document.getElementById('clearHighlight').addEventListener('click', clearHighlight);
@@ -484,7 +549,8 @@
         const cols = (p.colours && p.colours.length === routes.length)
           ? p.colours
           : routes.map(() => p.colour);
-        const isFuture = p.phase === 'future';
+        const phase = p.phase || 'legacy';
+        const isFuture = futurePhases.has(phase);
         // Future routes: append asterisk to indicate planned status.
         // Outline-only style is applied via the .future CSS class.
         const inner = routes.map((r, i) => {
@@ -505,12 +571,17 @@
           if (routes.length) applyHighlight(routes);
         });
         labelLayer.addLayer(marker);
-        allLabels.push({ marker, routes });
+        allLabels.push({ marker, routes, phase });
       }
       function applyLabelVisibility() {
         for (const lbl of allLabels) {
-          const visible = !selectedRoutes
-            || lbl.routes.some(r => selectedRoutes.has(r));
+          const phaseHidden = futurePhases.has(lbl.phase)
+            && !visibleFuturePhases.has(lbl.phase);
+          const replaced = lbl.routes.some(r => hiddenReplacedRoutes.has(r));
+          let visible = !phaseHidden && !replaced;
+          if (visible && selectedRoutes) {
+            visible = lbl.routes.some(r => selectedRoutes.has(r));
+          }
           const el = lbl.marker.getElement();
           if (el) el.style.display = visible ? '' : 'none';
         }
@@ -539,7 +610,21 @@
       const phasesMeta = meta.rollout_phases || {};
       const routePhase = meta.route_phase || {};
       const phaseRouteCounts = meta.phase_route_counts || {};
-      const phaseIds = Object.keys(phasesMeta).sort();
+      // Stable ordering: historical phases first by date, then the
+      // future ones (date === "future") at the bottom in phase-id order.
+      const phaseIds = Object.keys(phasesMeta).sort((a, b) => {
+        const ia = phasesMeta[a] || {}; const ib = phasesMeta[b] || {};
+        const fa = ia.date === 'future' ? 1 : 0;
+        const fb = ib.date === 'future' ? 1 : 0;
+        if (fa !== fb) return fa - fb;
+        if (fa === 1) return a < b ? -1 : a > b ? 1 : 0;
+        return (ia.date || '') < (ib.date || '') ? -1 : (ia.date || '') > (ib.date || '') ? 1 : 0;
+      });
+      window._phasesMeta = phasesMeta;
+      futurePhases.clear();
+      for (const [pid, info] of Object.entries(phasesMeta)) {
+        if (info && info.date === 'future') futurePhases.add(pid);
+      }
       const hour = meta.high_frequency_hour;
       const hourLabel = hour === 0 ? 'midnight' : hour === 12 ? 'noon' : hour < 12 ? `${hour} am` : `${hour - 12} pm`;
       const hfCount = meta.high_frequency_route_count || 0;
@@ -644,10 +729,20 @@
           });
         });
 
-        // Phase rows toggle membership in the highlight selection.
+        // Phase rows have two modes depending on the phase's date:
+        //  - future phases (date === "future") act as visibility
+        //    toggles. Activating one reveals its routes and hides any
+        //    listed in its `replacing` array.
+        //  - historical phases retain the highlight-only behavior.
         div.querySelectorAll('[data-phase]').forEach(row => {
           row.addEventListener('click', () => {
             const pid = row.getAttribute('data-phase');
+            if (futurePhases.has(pid)) {
+              if (visibleFuturePhases.has(pid)) visibleFuturePhases.delete(pid);
+              else visibleFuturePhases.add(pid);
+              applyVisibility();
+              return;
+            }
             if (selectedPhases.has(pid)) {
               selectedPhases.delete(pid);
               row.classList.remove('active');
@@ -728,6 +823,11 @@
         return div;
       };
       panelControl.addTo(map);
+
+      // Initial state: future phases are off, replaced routes are
+      // visible. applyVisibility hides any phase=future features and
+      // recomputes label display.
+      applyVisibility();
 
       map.on('click', () => { if (selectedRoutes) clearHighlight(); });
     }).catch(err => {
