@@ -42,6 +42,14 @@
       color: #888;
       margin-bottom: 6px;
     }
+    .panel .section-note {
+      font-size: 10px;
+      line-height: 1.35;
+      color: #888;
+      font-style: italic;
+      margin-bottom: 6px;
+    }
+    .panel .future-section .section-title { color: #b07b00; }
     .panel .row {
       display: flex;
       align-items: center;
@@ -680,11 +688,11 @@
           </div>${note}`;
         }).join('');
 
-        let phaseRows = '';
+        let liveRows = '';
+        let futureRows = '';
         const legacyCount = phaseRouteCounts.legacy || 0;
-        // Legacy first.
         if (legacyCount) {
-          phaseRows += `<div class="row" data-phase="legacy">
+          liveRows += `<div class="row" data-phase="legacy">
             <div class="row-left">
               <span class="check"></span>
               <span class="label-text"><span class="phase-id">—</span><span class="phase-date">pre-BusConnects</span></span>
@@ -695,13 +703,15 @@
         for (const pid of phaseIds) {
           const info = phasesMeta[pid];
           const cnt = phaseRouteCounts[pid] || 0;
-          phaseRows += `<div class="row" data-phase="${pid}">
+          const row = `<div class="row" data-phase="${pid}">
             <div class="row-left">
               <span class="check"></span>
               <span class="label-text"><span class="phase-id">${pid}</span><span class="phase-date">${info.date}</span></span>
             </div>
             <span class="row-count">${cnt}</span>
           </div>`;
+          if (futurePhases.has(pid)) futureRows += row;
+          else liveRows += row;
         }
 
         div.innerHTML = `
@@ -717,9 +727,16 @@
             <div class="section-title">Route categories</div>
             ${catRows}
           </div>
-          ${phaseRows ? `<div class="section">
+          ${liveRows ? `<div class="section">
             <div class="section-title">BusConnects phase</div>
-            ${phaseRows}
+            ${liveRows}
+          </div>` : ''}
+          ${futureRows ? `<div class="section future-section">
+            <div class="section-title">Future / potential phases</div>
+            <div class="section-note">Routes and rollout dates here are
+              proposals and may change. Tap a phase to preview the
+              planned network; routes it replaces will hide.</div>
+            ${futureRows}
           </div>` : ''}
         `;
 
